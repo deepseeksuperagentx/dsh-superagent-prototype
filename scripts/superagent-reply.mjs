@@ -12,6 +12,12 @@
  * the Source never reads half an event. `thread` points at the event that started the ticket, which puts the answer on
  * that ticket's own thread.
  *
+ * This answer is itself a webhook event, so the engine answers it on its own thread — but only if the event carries a
+ * `callback`. It does not have to be spelled out: like `scripts/superagent-event.mjs`, the event takes the URL from the
+ * one config file the local receiver reads, `<data-root>/state/superagent/webhook-reply.json`
+ * (`{ "url": "http://127.0.0.1:3083/receipt" }`). `--callback <URL>` overrides it, `--no-callback` leaves it off, and
+ * when the file is missing the event is written exactly as before: no callback.
+ *
  *   scripts/superagent-reply.mjs --ticket <32 位工单号> --text "<拍板结论>"
  *   scripts/superagent-reply.mjs --ticket <32 位工单号> --status
  *
@@ -25,16 +31,19 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+const usage = `Usage: superagent-reply.mjs --ticket <32 位工单号> --text "<拍板结论>"
+  [--status] [--data-root <path>] [--db <orchestrator.sqlite>] [--inbox <webhook inbox>]
+  [--sender <id>] [--name <名字>] [--conversation <id>]
+  [--callback <URL replies POST to> | --no-callback] [--reply-config <webhook-reply.json>]
+  Default: --reply-config <data-root>/state/superagent/webhook-reply.json --data-root ~/my_dsh_data.`
+const fail = (message) => { console.error(`${message}\n${usage}`); process.exit(1) }
+
 const argv = process.argv.slice(2)
 const value = (name) => {
   const at = argv.indexOf(name)
   return at < 0 ? undefined : argv.at(at + 1)
 }
 const has = (name) => argv.includes(name)
-const fail = (message) => {
-  console.error(message)
-  process.exit(1)
-}
 
 const ticketId = value('--ticket')
 if (!ticketId) fail('Give --ticket <32 位工单号>')
@@ -44,6 +53,21 @@ const inbox = value('--inbox') ?? join(dataRoot, 'state', 'superagent', 'webhook
 const sender = value('--sender') ?? 'someonehereany'
 const senderName = value('--name') ?? '三鑫'
 const text = value('--text')
+
+const configFile = value('--reply-config') ?? join(dataRoot, 'state', 'superagent', 'webhook-reply.json')
+/** The one callback every event of this machine gets, so a person's answer can be answered in turn. */
+function configuredCallback() {
+  if (!existsSync(configFile)) return undefined
+  let config
+  try { config = JSON.parse(readFileSync(configFile, 'utf8')) } catch (error) { fail(`${configFile} is not JSON: ${error}`) }
+  return typeof config?.url === 'string' && config.url ? config.url : undefined
+}
+const configured = configuredCallback()
+/** `--no-callback` is the escape hatch for a one-way event; otherwise the explicit URL wins, then the config file. */
+const callback = has('--no-callback') ? undefined : value('--callback') ?? configured
+if (callback) {
+  try { new URL(callback) } catch { fail(`--callback is not a URL: ${callback}`) }
+}
 
 if (!existsSync(dbPath)) fail(`No orchestrator database at ${dbPath}`)
 const db = new DatabaseSync(dbPath, { readOnly: true })
@@ -66,7 +90,9 @@ if (has('--status')) {
     attention: ticket.attention ?? null,
     latestReport: report ? { state: report.state, at: report.at, summary: report.summary } : null,
     waitsForPerson,
-    channel: channel ? { conversation: channel.address?.conversation, event: channel.address?.event } : null
+    channel: channel ? { conversation: channel.address?.conversation, event: channel.address?.event } : null,
+    callback: callback ?? null,
+    replyConfig: existsSync(configFile) ? configFile : null
   }, undefined, 2))
   process.exit(0)
 }
@@ -88,6 +114,7 @@ const event = {
   thread: originEvent,
   sender: { id: sender, name: senderName, bot: false },
   addressed: 'direct',
+  ...(callback ? { callback } : {}),
   text,
   at: new Date().toISOString()
 }
@@ -112,6 +139,7 @@ console.log(JSON.stringify({
   ticket: ticketId,
   conversation,
   thread: originEvent,
+  callback: callback ?? null,
   file: pending,
   waitsForPersonBefore: waitsForPerson
 }, undefined, 2))

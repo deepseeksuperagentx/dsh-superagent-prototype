@@ -105,14 +105,15 @@ const saveMap = () => {
 }
 
 const { executeBoard } = await import(pathToFileURL(boardWriter).href)
-const outcomes = { added: [], moved: [], unchanged: [], kept: [], failed: [] }
+const { applyDigest, digestLine } = await import(pathToFileURL(join(repo, 'scripts/scene-memory.mjs')).href)
+const outcomes = { added: [], moved: [], unchanged: [], kept: [], digested: [], failed: [] }
 /** One writer call as the projection's own slice. A dry run answers without touching the board. */
 const write = async (command, args = [], options = {}) => {
   if (dryRun) return { ok: true, taskId: 'T-DRYRUN' }
   return await executeBoard({ dataRoot, sceneId: scene, command, args, options: { panel, ...options } })
 }
 /** Record what the board actually holds now, so a half-done transition retries instead of looking like a person's edit. */
-const settled = (ticketId, boardId, state) => { map.tickets[ticketId] = { boardId, state, at: new Date().toISOString() } }
+const settled = (ticketId, boardId, state) => { map.tickets[ticketId] = { ...map.tickets[ticketId], boardId, state, at: new Date().toISOString() } }
 
 // The board is read once: a row in 已完成 has no state cell, so it is treated as the terminal state it got accepted into.
 const listing = await executeBoard({ dataRoot, sceneId: scene, command: 'list' })
@@ -181,6 +182,42 @@ for (const ticket of tickets) {
   outcomes.moved.push(`${known.boardId} ← ${ticket.id}：${row.state} → ${at}`)
 }
 
+// 收工摘要回写切片记忆：工单收工后把最新报告压成 §〇 里的一行，下一个会话开场就能读到；会话自己的交接字段不动。
+// §〇 只留一条，所以多条同时收工时取报告时间最新的那一条，其余的不排队。
+const memoryFile = join(dataRoot, 'memory', scene, `${panel}.md`)
+if (existsSync(memoryFile)) {
+  const candidates = tickets.flatMap((ticket) => {
+    const known = map.tickets[ticket.id]
+    if (!known || stateOf(ticket) !== 'review') return []
+    const report = latestReport(ticket)
+    const at = ticket.ended?.at ?? report?.at ?? ticket.updatedAt ?? ''
+    const key = `${ticket.ended?.at ?? ''}|${report?.at ?? ''}|${report?.state ?? ''}|${ticket.ended?.outcome ?? ''}`
+    return [{ ticket, known, report, at, key }]
+  }).sort((a, b) => String(b.at).localeCompare(String(a.at)))
+  const latest = candidates[0]
+  if (latest && latest.known.digest !== latest.key) {
+    const line = digestLine({
+      boardId: latest.known.boardId,
+      title: latest.ticket.title,
+      state: latest.report?.state ?? '未回灌',
+      summary: latest.report?.summary ?? latest.ticket.ended?.reason ?? '',
+      at: latest.at
+    })
+    const result = applyDigest(readFileSync(memoryFile, 'utf8'), line)
+    if (!result.changed) {
+      outcomes.kept.push(`记忆 ${latest.known.boardId}：${result.reason}`)
+    } else {
+      if (!dryRun) {
+        const temp = `${memoryFile}.tmp-${process.pid}`
+        writeFileSync(temp, result.markdown, 'utf8')
+        renameSync(temp, memoryFile)
+      }
+      latest.known.digest = latest.key
+      outcomes.digested.push(`${latest.known.boardId} ← ${latest.report?.state ?? '未回灌'}`)
+    }
+  }
+}
+
 saveMap()
 const line = (label, items) => console.log(`${label} ${items.length}：${items.length ? items.join('；') : '无'}`)
 console.log(`${dryRun ? 'DRY_RUN' : 'PROJECTED'} · ${scene} · 上游 ${tickets.length} 条工单 · 面板 ${panel}`)
@@ -188,6 +225,7 @@ line('新建', outcomes.added)
 line('移动', outcomes.moved)
 line('未变', outcomes.unchanged)
 line('保留人的改动', outcomes.kept)
+line('记忆回写', outcomes.digested)
 line('读不懂的行', malformed)
 line('失败', outcomes.failed)
 process.exitCode = outcomes.failed.length || malformed.length ? 2 : 0

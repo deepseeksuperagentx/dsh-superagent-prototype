@@ -8,15 +8,24 @@
  *
  * The Source moves each event it reads to `<inbox>/seen/`, or to `<inbox>/bad/` when it cannot read it, so a sender can
  * tell an event that was taken in from one that was rejected without asking the engine.
+ *
+ * An event carries the `callback` the engine posts its replies to; an event without one can never receive a reply (the
+ * Source answers `gone` and the message is dropped). No sender should have to spell that URL out, so the event takes it
+ * from the one config file the local receiver reads, `webhook-reply.json` in the profile's state directory
+ * (`{ "url": "http://127.0.0.1:3083/receipt" }`). An explicit `--callback <URL>` wins over it, `--no-callback` leaves it
+ * off on purpose, and when that file is missing the event is written exactly as before: no callback.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const usage = `Usage: superagent-event.mjs --inbox <absolute directory> --conversation <id> --text <event>
   [--stdin to read the event instead of --text] [--id <event id>] [--thread <event this one answers>] [--at <timestamp>]
   [--sender <id>] [--name <display name>] [--human] [--addressed mention|direct]
-  [--url <link to the event>] [--callback <URL replies POST to>] [--meta key=value ...]`
+  [--url <link to the event>] [--callback <URL replies POST to> | --no-callback]
+  [--reply-config <webhook-reply.json>] [--data-root <path>] [--meta key=value ...]
+  Default: --reply-config <data-root>/state/superagent/webhook-reply.json --data-root ~/my_dsh_data.`
 const fail = (message) => { console.error(`${message}\n${usage}`); process.exit(1) }
 
 const argv = process.argv.slice(2)
@@ -29,6 +38,22 @@ const sender = value('--sender')
 if (!inbox?.startsWith('/')) fail('Missing --inbox: an absolute directory')
 if (!conversation) fail('Missing --conversation')
 if (!text) fail('Missing --text (or --stdin to read the event from standard input)')
+
+const dataRoot = value('--data-root') ?? join(homedir(), 'my_dsh_data')
+const configFile = value('--reply-config') ?? join(dataRoot, 'state', 'superagent', 'webhook-reply.json')
+/** The one callback every event of this machine gets, so the sender never has to spell it out. */
+function configuredCallback() {
+  if (!existsSync(configFile)) return undefined
+  let config
+  try { config = JSON.parse(readFileSync(configFile, 'utf8')) } catch (error) { fail(`${configFile} is not JSON: ${error}`) }
+  return typeof config?.url === 'string' && config.url ? config.url : undefined
+}
+/** `--no-callback` is the escape hatch for an event that must stay one-way; otherwise the explicit URL wins, then the file. */
+const callback = argv.includes('--no-callback') ? undefined : value('--callback') ?? configuredCallback()
+if (callback) {
+  try { new URL(callback) } catch { fail(`--callback is not a URL: ${callback}`) }
+}
+
 /** Each `--meta key=value` becomes one entry of `event.meta`, which the Source keeps apart from its own fields. */
 const pairs = argv.flatMap((arg, at) => arg === '--meta' ? [argv.at(at + 1) ?? ''] : []).filter(pair => pair.includes('='))
 const event = {
@@ -38,7 +63,7 @@ const event = {
   ...(sender ? { sender: { id: sender, bot: !argv.includes('--human'), ...(value('--name') ? { name: value('--name') } : {}) } } : {}),
   ...(value('--addressed') ? { addressed: value('--addressed') } : {}),
   ...(value('--url') ? { url: value('--url') } : {}),
-  ...(value('--callback') ? { callback: value('--callback') } : {}),
+  ...(callback ? { callback } : {}),
   ...(pairs.length ? { meta: Object.fromEntries(pairs.map(pair => [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)])) } : {}),
 }
 mkdirSync(join(inbox, 'pending'), { recursive: true })

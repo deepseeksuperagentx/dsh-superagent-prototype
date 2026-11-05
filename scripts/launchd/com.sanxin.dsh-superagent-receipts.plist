@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the webhook reply receiver (scripts/webhook-receipt.mjs) running, so every reply the engine posts to a webhook
+  event lands in ~/my_dsh_data/state/superagent/receipts/receipts.jsonl and on the superagent-ops board.
+
+  Install (once), then it starts at login and is restarted if it ever dies:
+
+    cp ~/src/dsh-superagent/scripts/launchd/com.sanxin.dsh-superagent-receipts.plist ~/Library/LaunchAgents/
+    launchctl bootout gui/$(id -u)/com.sanxin.dsh-superagent-receipts 2>/dev/null
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanxin.dsh-superagent-receipts.plist
+    launchctl print gui/$(id -u)/com.sanxin.dsh-superagent-receipts | head
+
+  Logs: ~/my_dsh_data/state/superagent/receipts/receiver.out.log / .err.log
+  Stop: launchctl bootout gui/$(id -u)/com.sanxin.dsh-superagent-receipts
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sanxin.dsh-superagent-receipts</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/node@22/bin/node</string>
+    <string>--no-warnings</string>
+    <string>/Users/mac/src/dsh-superagent/scripts/webhook-receipt.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/src/dsh-superagent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/mac/my_dsh_data/state/superagent/receipts/receiver.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/my_dsh_data/state/superagent/receipts/receiver.err.log</string>
+</dict>
+</plist>
