@@ -52,8 +52,8 @@ if (!existsSync(boardWriter)) fail(`No board writer at ${boardWriter}: point --r
 const sceneFile = join(dataRoot, 'scenes', `${scene}.json`)
 if (!existsSync(sceneFile)) fail(`No scene at ${sceneFile}: the board's projection target must exist first`)
 
-/** What a projected row waits for before it can leave the board: a person accepting it. */
-const ACCEPTANCE = '上游 worker 收工并回灌报告，三鑫在本板 accept（机器不自批）'
+/** What a projected row waits for before it can leave the board: an acceptance verdict, by a machine or by a person. */
+const ACCEPTANCE = '上游 worker 收工并回灌报告；验收结论落本行证据列（机器复核写「机器验收：」，三鑫拍板写「三鑫拍板：」）'
 /** One table cell of text: no pipes, no line breaks, short enough to read on the board. */
 const cell = (text) => String(text ?? '').replace(/\s+/g, ' ').replace(/\|/g, '/').trim().slice(0, 220)
 /** The evidence a row points at: the ticket's own id, and the latest report its worker wrote back. */
@@ -63,10 +63,17 @@ const evidenceOf = (ticket) => {
   const end = ticket.ended ? ` · ${ticket.ended.by} 于 ${ticket.ended.at} 收单（${ticket.ended.outcome}）：${ticket.ended.reason ?? '无说明'}` : ''
   return cell(`上游 ticket ${ticket.id} · ${work}${end}`)
 }
-/** Upstream to board state: a running assignment is doing; an ended ticket waits for a person unless nothing was done. */
-const stateOf = (ticket) => ticket.ended
-  ? ['dropped', 'stopped'].includes(ticket.ended.outcome) ? 'cancelled' : 'review'
-  : ticket.assignments.some((item) => item.state === 'running') ? 'doing' : 'todo'
+/** The latest report a worker wrote back, if any. */
+const latestReport = (ticket) => ticket.assignments.findLast((item) => item.report)?.report
+/** Upstream to board state: a running assignment is doing; a worker asking for a person is blocked; an ended ticket waits for an acceptance. */
+const stateOf = (ticket) => {
+  if (ticket.ended) return ['dropped', 'stopped'].includes(ticket.ended.outcome) ? 'cancelled' : 'review'
+  // A worker waiting for a person is not "doing": its session is still open, but it reported that it needs a decision.
+  const report = latestReport(ticket)
+  if (report && ['blocked', 'failed'].includes(report.state)) return 'blocked'
+  if (ticket.assignments.some((item) => item.state === 'running')) return 'doing'
+  return 'todo'
+}
 
 const source = new DatabaseSync(db, { readOnly: true })
 const rows = source.prepare('SELECT value FROM ticket ORDER BY rowid').all().map((row) => row.value)
@@ -120,12 +127,22 @@ const steps = (from, to, ticket) => {
   if (to === 'cancelled') return [['cancel', { reason: `上游 ${ticket.ended.outcome}：${ticket.ended.reason ?? '无说明'}`, now: ticket.ended.at }]]
   const path = []
   let at = from
+  const report = latestReport(ticket)
+  if (at === 'todo' && to === 'blocked' || at === 'doing' && to === 'blocked') {
+    // 流 B 的入口：worker 说要人（blocked / failed），板上这一行挂起并点名三鑫。
+    path.push(['block', { blockType: 'needs_input', needs: '三鑫', reason: `上游 worker 报告 ${report?.state ?? 'blocked'}：${cell(report?.summary ?? '')}`, now: ticket.updatedAt }])
+    at = 'blocked'
+  }
   if (at === 'todo' && ['doing', 'review'].includes(to)) { path.push(['start', { now: ticket.updatedAt }]); at = 'doing' }
+  if (at === 'blocked' && ['doing', 'review'].includes(to)) {
+    // The board only lets a blocked row go back to doing; a finished ticket therefore travels blocked → doing → review.
+    path.push(['start', { now: ticket.updatedAt }]); at = 'doing'
+  }
   if (at === 'doing' && to === 'review') path.push(['submit', { evidence: evidenceOf(ticket), now: ticket.ended?.at ?? ticket.updatedAt }])
   return path
 }
 /** Where a row stands after one of those steps. */
-const landed = (command) => command === 'start' ? 'doing' : command === 'submit' ? 'review' : 'cancelled'
+const landed = (command) => command === 'start' ? 'doing' : command === 'submit' ? 'review' : command === 'block' ? 'blocked' : 'cancelled'
 
 for (const ticket of tickets) {
   const wanted = stateOf(ticket)
