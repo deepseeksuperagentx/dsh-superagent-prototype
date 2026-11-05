@@ -30,6 +30,7 @@ import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
 import { registerHttp, type HttpHost } from './http.ts'
+import type { TodoItemView } from './views/todos.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { eventNotice, followupNotice } from './notices.ts'
@@ -223,7 +224,26 @@ export class Runtime extends Service implements SourceHost {
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
+      readTodos: (sessionId: string) => runtime.readTodos(sessionId),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+  }
+  /**
+   * The `todos` projection of one Session, read through the Session controller so a worker that is not live still resolves
+   * from persistence. A deployment that composes no todo tool, or a Session this Host cannot read, yields undefined: the
+   * panel then shows the Ticket without a list instead of failing the whole page.
+   */
+  private async readTodos(sessionId: string): Promise<TodoItemView[] | undefined> {
+    try {
+      const value = await this.ctx.sessionController.projections({ sessionId: sessionId as SessionId }, AbortSignal.timeout(5_000))
+      const todos = value && 'values' in value ? (value.values as { todos?: unknown }).todos : undefined
+      if (!Array.isArray(todos)) return undefined
+      return todos.flatMap(item => {
+        const todo = item as { content?: unknown; status?: unknown }
+        return typeof todo?.content === 'string' && typeof todo.status === 'string' ? [{ content: todo.content, status: todo.status }] : []
+      })
+    } catch {
+      return undefined
+    }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

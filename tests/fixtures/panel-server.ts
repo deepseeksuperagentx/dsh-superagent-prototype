@@ -90,6 +90,8 @@ export interface PanelServer {
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
+  /** When set, the answer route refuses with it instead of accepting the person's reply. */
+  answerRefusal?: Refusal
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
   person: TicketRow[]; search: Pick<ApiResponse<'GET search'>, 'items' | 'threads'>; history: HistoryView
@@ -327,6 +329,9 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
     : 'open']) },
   'GET tickets/:id': { answer: ({ params }) => server.ticketDetails[params.id] ?? refuse(404, 'Ticket not found') },
+  'POST tickets/:id/answer': { body: true, answer: ({ params }) => server.answerRefusal ?? { answered: true, ticketId: params.id,
+    triggerId: `answer-${params.id}`, thread: 'ops:answering-ticket' } },
+  'GET todos': { answer: () => ({ items: [], total: 0 }) },
   'POST tickets/:id/retry': { answer: ({ params }) => {
     const ticket = ticketOf(params.id)
     if (!ticket) return refuse(404, 'Ticket not found')

@@ -5,6 +5,7 @@ import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
+import { InboxPage } from './inbox.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
@@ -13,6 +14,7 @@ import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, s
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
+import { TodosPage } from './todos.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
@@ -147,6 +149,8 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   const page = (() => {
     switch (route.page) {
       case 'overview': return <OverviewPage />
+      case 'inbox': return <InboxPage />
+      case 'todos': return <TodosPage />
       case 'source': return <SourceStatus />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />

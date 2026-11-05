@@ -8,6 +8,7 @@ import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
+import type { TodoListView } from './views/todos.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
@@ -16,6 +17,8 @@ export type ThreadFilter = typeof THREAD_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
+/** What a panel answer became: the Trigger it produced and the conversation thread it landed on. */
+export interface AnswerView { answered: true; ticketId: string; triggerId: string; thread: string }
 
 export interface Api {
   'GET state': { response: StateView }
@@ -32,8 +35,10 @@ export interface Api {
   'POST decisions/:id/dismiss': { response: { dismissed: true } }
   'GET tickets': { query?: Paged & { state?: TicketFilter }; response: TicketListView }
   'GET tickets/:id': { response: TicketPageView }
+  'POST tickets/:id/answer': { body: { text: string }; response: AnswerView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
+  'GET todos': { response: TodoListView }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }

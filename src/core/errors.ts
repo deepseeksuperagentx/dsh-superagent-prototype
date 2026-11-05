@@ -43,6 +43,7 @@ export const USER_ERRORS = {
   promptPartEmpty: ['refused', 'The “{part}” part cannot be empty; reset it to follow its built-in text'],
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   noLabels: ['refused', 'This Source has no names to refresh'],
+  answerChannel: ['refused', 'This ticket did not start on the Webhook Source, so the panel cannot answer it there; answer it on its own channel ({channels})'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS

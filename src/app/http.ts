@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
+import { THREAD_FILTERS, TICKET_FILTERS, type AnswerView, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
@@ -11,7 +11,8 @@ import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, b
 import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
-import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
+import { UserError, liveTicket, type EngineForPeople, type Ticket } from '../core/index.ts'
+import { answerTrigger } from './answers.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
@@ -27,6 +28,8 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import { todoList, type TodoItemView } from './views/todos.ts'
+export type { TodoListView } from './views/todos.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -50,6 +53,8 @@ export interface HttpHost {
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
+  /** The `todos` projection of one worker Session, or undefined when the deployment composes no todo tool. */
+  readTodos(sessionId: string): Promise<TodoItemView[] | undefined>
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
@@ -147,6 +152,8 @@ const PromptsQuery = z.object({ revision: count.optional(), offset: count.defaul
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+/** One person's answer from the panel; the limit matches what a Webhook Source event accepts. */
+const AnswerRequest = z.object({ text: z.string().trim().min(1).max(20_000) })
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
@@ -190,8 +197,19 @@ function routes(runtime: HttpHost): Routes {
       return ticketList(views(runtime), state, offset, limit)
     },
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
+    'POST tickets/:id/answer': async ({ params, body }) => {
+      const id = ticket(params.id)
+      const found = store.tickets.get(id) as Ticket
+      if (!liveTicket(found)) throw new UserError('ticketEnded')
+      const trigger = answerTrigger(found, AnswerRequest.parse(await body(64 * 1024)).text)
+      // The answer is a person's Trigger on the ticket's own thread: the engine routes it back to that ticket's worker.
+      runtime.engine.receive(trigger)
+      const answer: AnswerView = { answered: true, ticketId: id, triggerId: trigger.id, thread: trigger.threads[0]?.id ?? '' }
+      return answer
+    },
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'GET todos': () => todoList(runtime),
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
