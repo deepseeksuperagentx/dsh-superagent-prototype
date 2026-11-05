@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the workbench harness (dsh --profile web) running on the FIXED loopback port 3080.
+
+  Before this job the profile was started as `dsh --profile web --port 0`, so its port was random on every
+  start (53052 at the time of writing) and could not be bookmarked. The port is also pinned in
+  ~/.dsh/profiles/web/cordis.patch.yml (`- id: webserver  config: { port: 3080 }`); this file passes it
+  explicitly too so the launch command is readable on its own.
+
+  This profile carries the台面 bundles: dsh-scene-todo, dsh-community-desk, @linxin666/dsh-client-ui-task-board.
+
+  Install (once). Stop any hand-started `dsh --profile web` FIRST: two instances of one profile would both
+  write the workspace registry and the two ports would disagree with the pinned one.
+
+    launchctl bootout gui/$(id -u)/com.dsh.harness-web 2>/dev/null
+    pkill -f 'dsh --profile web' ; sleep 2
+    cp ~/src/dsh-superagent/scripts/launchd/com.dsh.harness-web.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dsh.harness-web.plist
+    launchctl print gui/$(id -u)/com.dsh.harness-web | head
+
+  Logs: ~/my_dsh_data/state/harness/web.out.log / .err.log
+  Stop: launchctl bootout gui/$(id -u)/com.dsh.harness-web
+  Restart: launchctl kickstart -k gui/$(id -u)/com.dsh.harness-web
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dsh.harness-web</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/node@22/bin/node</string>
+    <string>--no-warnings</string>
+    <string>/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/lib/bin.js</string>
+    <string>--profile</string>
+    <string>web</string>
+    <string>--port</string>
+    <string>3080</string>
+    <string>--no-open</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/my_dsh_data/workspace</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- A port already taken must not turn into a tight restart loop. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/mac/my_dsh_data/state/harness/web.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/my_dsh_data/state/harness/web.err.log</string>
+</dict>
+</plist>

@@ -76,3 +76,48 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanxin.dsh-superagen
   `skipped` 并写日志，文件里仍有原文。
 - 板锁冲突：`board.mjs` 的锁只有两次尝试，接收器遇到「场景板被锁定」会退避重试三次，仍失败就留给 60 秒后的重试。
 - 只监听回环地址；body 上限 256 KB（引擎正文上限 20 000 字符）。
+
+---
+
+# 两套 harness 常驻（launchd）
+
+原来两套 DSH harness 都是手起的：`superagent` 在 3082，`web` 用 `--port 0`（端口每次随机，写作时是 53052）。
+现在各自一个 launchd job 固定端口、登录即起、挂了自动拉起。
+
+| job | profile | 端口 | 日志 |
+| --- | --- | --- | --- |
+| `com.dsh.harness-superagent` | `superagent`（dsh-superagent 引擎 + 面板 + 看板浮层） | **3082**（端口写在该 profile 的 patch 里） | `~/my_dsh_data/state/superagent/harness.{out,err}.log` |
+| `com.dsh.harness-web` | `web`（工作台：scene-todo / community-desk / task-board） | **3080**（plist 传 `--port 3080`，profile patch 也钉了同一值） | `~/my_dsh_data/state/harness/web.{out,err}.log` |
+| `com.sanxin.dsh-superagent-receipts` | 回执接收端（非 harness） | 3083 | `state/superagent/receipts/receiver.{out,err}.log` |
+
+## 切换（先停手起的进程，再 bootstrap）
+
+**顺序不能反**：同一个 profile 跑两个实例会互相写 workspace 注册表；端口被占时 `KeepAlive` 会每 30 秒重试一次。
+
+```sh
+uid=$(id -u)
+# 1) 停手起的 harness（只停这两个 profile，别误伤回执接收端）
+pkill -f 'dsh --profile superagent' ; pkill -f 'dsh --profile web' ; sleep 2
+# 2) 装 plist 并加载
+cp ~/src/dsh-superagent/scripts/launchd/com.dsh.harness-*.plist ~/Library/LaunchAgents/
+for job in com.dsh.harness-superagent com.dsh.harness-web; do
+  launchctl bootout gui/$uid/$job 2>/dev/null
+  launchctl bootstrap gui/$uid ~/Library/LaunchAgents/$job.plist
+done
+# 3) 看
+launchctl print gui/$uid/com.dsh.harness-superagent | head -20
+curl -s -o /dev/null -w '3082 %{http_code}\n' http://127.0.0.1:3082/
+curl -s -o /dev/null -w '3080 %{http_code}\n' http://127.0.0.1:3080/
+```
+
+`superagent` 那条会重启引擎进程：**正在进行的会话不会丢**（会话日志持久化），但当前这一轮回复会断。
+浏览器标签页要重新打开一次——顺手也把已卸载插件的残留客户端模块清掉。
+
+## 边界
+
+- 端口只有两处真源：`superagent` 在 `~/.dsh/profiles/superagent/cordis.patch.yml`，`web` 在 plist 的 `--port 3080`
+  与 `~/.dsh/profiles/web/cordis.patch.yml` 两条同值，改端口要两处一起改。
+- 两个 profile 的 bundle 不合并：`superagent` 装 `dsh-superagent`，`web` 装工作台三件套；共享的是数据层
+  （看板 / 切片记忆 / 回执都在 `~/my_dsh_data`，写入口只有 `board.mjs`）。
+- 看板浮层（`dsh-scene-todo`）现在两套 harness 都装了；`superagent` 侧绑定在 `superagent-ops` 场景上
+  （`~/my_dsh_data/scenes/superagent-ops.json` 的 `panel.config.sessionId`）。

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the superagent harness (dsh --profile superagent) running on its fixed loopback port 3082.
+
+  This is the GUI that serves the dsh-superagent engine: 概览 / 待确认 / 待办 / 执行 面板, the session list,
+  and the scene-todo overlay bound to the superagent-ops board.
+
+  The port comes from that profile's own patch (~/.dsh/profiles/superagent/cordis.patch.yml,
+  `- id: webserver  config: { host: 127.0.0.1, port: 3082 }`), not from this file.
+
+  Install (once). Stop any hand-started `dsh --profile superagent` FIRST: a second instance would fight for
+  port 3082, and this job would then restart-loop against the running one.
+
+    launchctl bootout gui/$(id -u)/com.dsh.harness-superagent 2>/dev/null
+    pkill -f 'dsh --profile superagent' ; sleep 2
+    cp ~/src/dsh-superagent/scripts/launchd/com.dsh.harness-superagent.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dsh.harness-superagent.plist
+    launchctl print gui/$(id -u)/com.dsh.harness-superagent | head
+
+  Logs: ~/my_dsh_data/state/superagent/harness.out.log / .err.log
+  Stop: launchctl bootout gui/$(id -u)/com.dsh.harness-superagent
+  Restart: launchctl kickstart -k gui/$(id -u)/com.dsh.harness-superagent
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dsh.harness-superagent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/opt/node@22/bin/node</string>
+    <string>--no-warnings</string>
+    <string>/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/lib/bin.js</string>
+    <string>--profile</string>
+    <string>superagent</string>
+    <string>--no-open</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/my_dsh_data/state/superagent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- A port already taken must not turn into a tight restart loop. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/mac/my_dsh_data/state/superagent/harness.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/my_dsh_data/state/superagent/harness.err.log</string>
+</dict>
+</plist>
