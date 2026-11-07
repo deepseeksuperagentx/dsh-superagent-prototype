@@ -95,10 +95,14 @@ const event = {
   ...(value('--addressed') ? { addressed: value('--addressed') } : {}),
   ...(value('--url') ? { url: value('--url') } : {}),
   ...(callback ? { callback } : {}),
-  // 来源写进 meta.origin：谁派的单（人 / 会话代发 / 被拒的 worker）、代发的是哪个会话、什么时候。
+  // 来源写进 meta（谁派的单：human / chat-session / worker；代发的是哪个会话；什么时候）。
+  // 注意引擎的 EventSchema 把 meta 限制成「字符串(≤500)/数字/布尔」的扁平 record，
+  // 不能塞嵌套对象，所以用 origin.kind / origin.session / origin.signedAt 三个扁平键。
   meta: {
     ...extraMeta,
-    origin: { kind: originKind, ...(originSession ? { session: originSession } : {}), signedAt: new Date().toISOString() },
+    'origin.kind': originKind,
+    ...(originSession ? { 'origin.session': originSession } : {}),
+    'origin.signedAt': new Date().toISOString(),
   },
 }
 mkdirSync(join(inbox, 'pending'), { recursive: true })

@@ -65,9 +65,12 @@ function sweep() {
     const file = join(pending, name)
     let event
     try { event = JSON.parse(readFileSync(file, 'utf8')) } catch { continue }
-    const origin = event?.meta?.origin
-    const kind = origin?.kind
-    const session = origin?.session
+    // 引擎 EventSchema 只收扁平标量 meta，所以来源是 meta['origin.kind'] / meta['origin.session']；
+    // 同时兼容早期写成嵌套对象 meta.origin 的事件（会被引擎打回 bad/，这里兜底能拦就直接拦）。
+    const meta = event?.meta ?? {}
+    const origin = meta.origin && typeof meta.origin === 'object' ? meta.origin : null
+    const kind = origin?.kind ?? meta['origin.kind']
+    const session = origin?.session ?? meta['origin.session']
     let reason
     if (kind === 'worker') reason = 'origin.kind=worker：superagent 的 agent 不得给 superagent 派单（防递归）'
     else if (session && ownedBySuperagent(session)) reason = `origin.session=${session} 属于 superagent 自己管的会话（防递归）`
