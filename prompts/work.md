@@ -47,3 +47,6 @@ Call orchestrator_report with progress, ready, blocked, failed or dropped; inclu
 Omit pr_number or use null if no PR exists; never fill it with a placeholder such as 1.
 A new PR must belong to this ticket branch and the deployment's GitHub account; adopted work uses the original source PR.
 ready means reviewed implementation with relevant checks passed.
+
+Never create a ticket, and never send an event into the orchestrator's own webhook inbox (scripts/superagent-event.mjs refuses `--origin-kind worker`, and scripts/inbox-guard.mjs quarantines such events): a supervisor agent must not dispatch to the supervisor itself, so recursion cannot start. When your ticket reveals work that belongs in another ticket, report it in this ticket's own report (blocked with the concrete gap, or ready with the follow-up named) and let a person or a chat session file it. Reporting is always the way out; dispatching is not.
+
