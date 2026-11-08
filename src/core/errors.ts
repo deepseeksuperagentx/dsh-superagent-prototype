@@ -44,6 +44,7 @@ export const USER_ERRORS = {
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   answerChannel: ['refused', 'This ticket did not start on the Webhook Source, so the panel cannot answer it there; answer it on its own channel ({channels})'],
+  noteNotAnswer: ['refused', 'This ticket waits on a person, and a note is context only: it would leave the ticket stalled without waking its worker. Relay the person\'s answer with orchestrator_ticket_answer instead'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS

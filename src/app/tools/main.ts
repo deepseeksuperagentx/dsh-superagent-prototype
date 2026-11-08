@@ -2,9 +2,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
+import { UserError, followupOwners, key, liveTicket, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
   from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
+import { answerTrigger } from '../answers.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
@@ -175,14 +176,33 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_ticket_note',
-      description: 'Tell a ticket\'s worker a fact from other work, such as what another ticket found; it grants no authority.',
+      description: 'Tell a ticket\'s worker a fact from other work, such as what another ticket found; it grants no authority. A note is context only: it never answers a ticket that waits on a person.',
       schema: z.object({
         ticket_id: z.string(),
         text: z.string().trim().min(1).refine(text => wordCount(text) <= IM_WORDS, `At most ${IM_WORDS} words`),
       }).strict(),
       execute: async args => {
+        // A ticket waiting on a person wakes only for a human Trigger: a note would sit in its inputs for context only and
+        // leave the ticket stalled in person/answer (the 2026-11-08 incident). Refuse loudly instead of failing silently.
+        const ticket = host.store.tickets.get(args.ticket_id)
+        if (ticket?.attention) throw new UserError('noteNotAnswer')
         host.engine.note(args.ticket_id, args.text)
         return routed(host, { reason: 'Noted for the worker', ticketId: args.ticket_id })
+      },
+    }),
+    tool({
+      name: 'orchestrator_ticket_answer',
+      description: 'Relay a person\'s answer to the question a ticket\'s worker asked: it reaches the ticket as a human Trigger on its own conversation, which is what wakes a worker that reported blocked or failed. Use the person\'s own words; a note cannot answer.',
+      schema: z.object({
+        ticket_id: z.string(),
+        text: z.string().trim().min(1),
+      }).strict(),
+      execute: async args => {
+        const ticket = host.store.tickets.get(args.ticket_id)
+        if (!ticket) throw new UserError('unknownTicket')
+        if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+        host.engine.receive(answerTrigger(ticket, args.text))
+        return routed(host, { reason: 'Relayed the person\'s answer to the ticket', ticketId: ticket.id })
       },
     }),
     tool({

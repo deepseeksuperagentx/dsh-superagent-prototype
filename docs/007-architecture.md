@@ -419,6 +419,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/answers.spec.ts` | A panel answer as a Trigger: the Ticket's own Thread, the person who authorized it, one id per answer, and the refusal for a Ticket from another Source |
+| `tests/main-answer.spec.ts` | The main Session's answer path: a note refused while a Ticket waits on a person, and `orchestrator_ticket_answer` building the person's Trigger on the Ticket's own conversation |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
