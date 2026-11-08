@@ -19,9 +19,10 @@
  * 残余风险写在 docs/adr/0012-递归派单禁令.md「残余风险」一节。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+// 归属判定的唯一实现（与 scripts/superagent-event.mjs 共用，口径见文件头注释）。
+import { ownedBySuperagent } from './origin-ownership.mjs'
 
 const argv = process.argv.slice(2)
 const value = (name) => { const at = argv.indexOf(name); return at < 0 ? undefined : argv.at(at + 1) }
@@ -36,18 +37,11 @@ const auditFile = join(dataRoot, 'state', 'superagent', 'event-audit.jsonl')
 if (!once && !watch) { console.error('用法: node inbox-guard.mjs --once | --watch [--interval 1]'); process.exit(2) }
 
 const ownedCache = new Map()
-/** 会话 id 是否属于 superagent 自己管的会话（orchestrator.sqlite 里 ticket/thread 出现过）。 */
-function ownedBySuperagent(sessionId) {
+/** 会话 id 是否属于 superagent 自己管的会话（带缓存；判定口径在 scripts/origin-ownership.mjs）。 */
+function isOwnedBySuperagent(sessionId) {
   if (!sessionId) return false
   if (ownedCache.has(sessionId)) return ownedCache.get(sessionId)
-  const db = join(dataRoot, 'state', 'superagent', 'orchestrator.sqlite')
-  let owned = false
-  if (existsSync(db)) {
-    const safe = sessionId.replace(/'/g, "''")
-    const query = `select (select count(*) from ticket where value like '%${safe}%') + (select count(*) from thread where value like '%${safe}%');`
-    const out = spawnSync('sqlite3', ['-readonly', `file:${db}?mode=ro`, query], { encoding: 'utf8' })
-    if (out.status === 0) owned = Number(String(out.stdout).trim() || 0) > 0
-  }
+  const owned = ownedBySuperagent(sessionId, dataRoot)
   ownedCache.set(sessionId, owned)
   return owned
 }
@@ -73,7 +67,7 @@ function sweep() {
     const session = origin?.session ?? meta['origin.session']
     let reason
     if (kind === 'worker') reason = 'origin.kind=worker：superagent 的 agent 不得给 superagent 派单（防递归）'
-    else if (session && ownedBySuperagent(session)) reason = `origin.session=${session} 属于 superagent 自己管的会话（防递归）`
+    else if (session && isOwnedBySuperagent(session)) reason = `origin.session=${session} 属于 superagent 自己管的会话（防递归）`
     if (!reason) continue
     mkdirSync(rejected, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')

@@ -16,10 +16,11 @@
  * off on purpose, and when that file is missing the event is written exactly as before: no callback.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+// 归属判定的唯一实现（与 scripts/inbox-guard.mjs 共用，口径见文件头注释）。
+import { ownedBySuperagent } from './origin-ownership.mjs'
 
 const usage = `Usage: superagent-event.mjs --inbox <absolute directory> --conversation <id> --text <event>
   [--stdin to read the event instead of --text] [--id <event id>] [--thread <event this one answers>] [--at <timestamp>]
@@ -56,17 +57,7 @@ if (originKind === 'worker') {
   fail('拒发：superagent 的 agent（worker / executor）不得给 superagent 派单（防递归）。请在自己工单里报告，或把结论交回人/会话。')
 }
 if (originKind === 'chat-session' && !originSession) fail('--origin-kind chat-session 必须带 --origin-session <会话 id>（留痕用）')
-/** 会话 id 是否属于 superagent 自己管的会话（ticket 的 assignment 或 thread 的 subscription）。 */
-function ownedBySuperagent(root, sessionId) {
-  if (!sessionId) return false
-  const db = join(root, 'state', 'superagent', 'orchestrator.sqlite')
-  if (!existsSync(db)) return false
-  const query = `select (select count(*) from ticket where value like '%${sessionId.replace(/'/g, "''")}%') + (select count(*) from thread where value like '%${sessionId.replace(/'/g, "''")}%');`
-  const out = spawnSync('sqlite3', ['-readonly', `file:${db}?mode=ro`, query], { encoding: 'utf8' })
-  if (out.status !== 0) return false
-  return Number(String(out.stdout).trim() || 0) > 0
-}
-if (originSession && ownedBySuperagent(dataRoot, originSession)) {
+if (originSession && ownedBySuperagent(originSession, dataRoot)) {
   fail(`拒发：--origin-session ${originSession} 是 superagent 自己管的会话（ticket/thread 里查得到），不得再给 superagent 派单（防递归）。`)
 }
 
