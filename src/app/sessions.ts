@@ -66,6 +66,8 @@ const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job
 /** What a main Session under `standard` is told when its command would wait the shell's default. */
 const DEFAULT_WAIT = 'This shell waits up to 60 seconds by default: pass timeoutMs of at most 30000, or run_in_background, '
   + 'as a waiting step holds back new candidates.'
+/** How long the `models` health entry waits before it is rebuilt, so a burst of Session events becomes one rebuild. */
+const MODEL_HEALTH_DEBOUNCE_MS = 250
 /** `sleep` at a command position: the start, after ; & | ( { ! ` or a newline, or after a keyword or a command that runs it. */
 const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|nohup|command|env)\s)\s*(?:\S*\/)?sleep\b/
 /**
@@ -96,6 +98,8 @@ export class Sessions {
   private readonly bindings = new Map<Agent, SessionBinding>()
   private readonly retryHealth = new RetryHealth()
   private readonly ctx: Context
+  /** The pending rebuild of the `models` health entry, which the events of a Session coalesce into one. */
+  private healthTimer?: ReturnType<typeof setTimeout>
   /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session. */
   constructor(private readonly host: SessionsHost) {
     this.ctx = host.context
@@ -220,10 +224,17 @@ export class Sessions {
     return retry ? { model_retry: retry } : {}
   }
   private updateModelHealth(): void {
-    const retries = this.retryHealth.list()
-    this.host.health.set(retries.length
-      ? { state: 'error', detail: retries.slice(0, 5).map(item => `${item.sessionId}: ${item.provider} is over its model budget; retried ${item.attempts} times, waiting since ${item.since}; the model and retry policy are unchanged`).join('; ') + (retries.length > 5 ? `; ${retries.length - 5} more Sessions` : ''), at: retries.at(-1)!.lastAt }
-      : { state: 'ready', detail: 'No managed Session is waiting on a model budget retry' })
+    // The health entry lists every Session that waits on a model budget, so it is rebuilt from the whole retry table. A
+    // Session event arrives per step, and a long run produces thousands of them, so the rebuild is deferred and coalesced:
+    // one rebuild per quiet period instead of one per event.
+    if (this.healthTimer !== undefined) return
+    this.healthTimer = setTimeout(() => {
+      this.healthTimer = undefined
+      const retries = this.retryHealth.list()
+      this.host.health.set(retries.length
+        ? { state: 'error', detail: retries.slice(0, 5).map(item => `${item.sessionId}: ${item.provider} is over its model budget; retried ${item.attempts} times, waiting since ${item.since}; the model and retry policy are unchanged`).join('; ') + (retries.length > 5 ? `; ${retries.length - 5} more Sessions` : ''), at: retries.at(-1)!.lastAt }
+        : { state: 'ready', detail: 'No managed Session is waiting on a model budget retry' })
+    }, MODEL_HEALTH_DEBOUNCE_MS)
   }
   private ticketOf(agent: Agent): Ticket | undefined {
     const ticketId = ticketOfSession(agent.id)
@@ -348,5 +359,8 @@ export class Sessions {
     }
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */
-  dispose(): void { for (const agent of [...this.bindings.keys()]) this.release(agent) }
+  dispose(): void {
+    if (this.healthTimer !== undefined) { clearTimeout(this.healthTimer); this.healthTimer = undefined }
+    for (const agent of [...this.bindings.keys()]) this.release(agent)
+  }
 }

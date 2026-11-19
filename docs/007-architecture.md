@@ -240,6 +240,34 @@ Each model request binds the Session to the current prompt revision. The revisio
 
 `status` and `promptVersion` serve prompt pages. Saves go through `Prompts.save` and notify the main Session. `modelRetry` exposes model-budget retry state.
 
+The `models` health entry lists every Session waiting on a model budget, so it is rebuilt from the whole retry table. Session events arrive per step, and a long run produces thousands of them, so the rebuild is deferred and coalesced into one per quiet period.
+
+### Session reaper
+
+A DeepSeek Harness Session keeps its whole event log in memory, and the orchestrator's worker Sessions live in the same process as the orchestrator itself. A worker that finished its Ticket therefore kept its Session — and every `assistant/message` it produced, including the per-token `stream` trace — resident until the process restarted. With dozens of finished Tickets that was the dominant share of the orchestrator's heap, and the reason it could run out of memory under load.
+
+`SessionReaper` (`src/app/session-reaper.ts`) releases the worker Session of a Ticket that ended for good. It learns of a Session when it is created or its status changes, remembers how to release it, and releases it once the Ticket ended and its worker settled.
+
+The Engine reports `ticket.ended` inside the transaction that ends the Ticket, and the Executor cancels the worker's turn in that transaction's commit. The reaper therefore waits for the commit before it releases, so it sees the worker after its turn was cancelled rather than while it still runs. A worker that still holds a shell job or a subagent is not cut off mid-work: the release waits for it to settle, and a worker that never settles is released anyway, because its Ticket ended and its work is done.
+
+A Session is released through the agent's own Cordis scope (`dsh-scope`'s `createScope(loopCtx, agent)`), whose fiber the agent factory's teardown uses to detach the agent and the Session from their stores, which is what frees the Session's event log. The agent's `ctx` cannot be used instead: `ctx.extend()` builds the scope's context from the parent, so `agent.ctx.fiber` resolves to the *parent* fiber, whose disposal leaves the scope untouched.
+
+The reaper is deliberately conservative. The orchestrator's own Session is never released. A Ticket ended *by a person* may be resumed, and a resumed Ticket reads its worker's history back, so its Session is kept. The durable record on disk is kept as well: reaping releases the in-memory Session, and the persisted log under the DeepSeek Harness home stays the history a resumed Ticket reads.
+
+### Master Session rotation
+
+The orchestrator's own Session keeps its whole event log in memory, and a resumed Session is seeded with all of it, so its log grew with every turn and every restart loaded that history back into the heap. With the worker Sessions released, this log was the one accumulation left that no longer had a bound.
+
+The Session's own compaction already keeps the model's context bounded, and its summary carries the continuity the orchestrator needs: its identity, its intent, and the state of its work. `rotateMasterIfLarge` (`src/app/master-rotation.ts`) uses that summary: when the stored log grew past the limit, the orchestrator starts a fresh Session and seeds it with the summary, so it keeps its context and loses the raw event stream that grew without end.
+
+The rotation happens at startup, before the orchestrator does any work, and only for a Session whose stored log is larger than the limit. A Session that stays under it is left alone, so a healthy deployment never rotates.
+
+The rotation happens *before* the Session is loaded. A resumed Session is seeded with its whole stored log, so loading a Session whose log grew past the limit would put that log into memory first and only then replace it — which leaves the very memory the rotation was meant to save.
+
+The fresh Session gets a new identity: a Session that exists on disk is reused, so the same identity would carry the old log back. The old identity keeps its record, and the orchestrator's identity moves to the fresh Session. `Runtime.masterId` is therefore read rather than captured, so every holder of it follows the rotation.
+
+The panel's session history promotes a stored Session back into memory when a person browses it, so the superseded Session can be loaded again — with its whole event log — after the rotation. `SessionReaper.supersededByRotation` releases it once it settles, rather than letting it become the next accumulation. The superseded identities are kept durably, because the promotion can happen in a later process than the rotation.
+
 ### Glue
 
 | Glue | Translates |
@@ -332,6 +360,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/sessions.ts` | Sessions |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
+| `src/app/session-reaper.ts` | `SessionReaper`: releases the worker Session of a Ticket that ended for good, so its event log stops occupying the orchestrator's heap |
+| `src/app/master-rotation.ts` | `rotateMasterIfLarge`: rotates the orchestrator's own Session when its stored log grew past the limit, seeding the fresh Session with the compaction summary |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
@@ -431,6 +461,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
+| `tests/session-reaper.spec.ts` | Releasing the worker Session of a Ticket that ended: a live Ticket, one a person ended, a busy worker, a failed release, a Session released once, and a Session a rotation superseded |
+| `tests/master-rotation.spec.ts` | Rotating the orchestrator's Session: a log within the limit, one past it, one without a summary, and one that cannot be read |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |

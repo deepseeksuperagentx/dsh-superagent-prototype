@@ -22,6 +22,7 @@ import { environmentOf, ticketEnvironment, type Variable } from './execution-env
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
+import { SessionReaper } from './session-reaper.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
@@ -41,7 +42,8 @@ import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
-import { Sessions } from './sessions.ts'
+import { Sessions, ROUTER_PRESET } from './sessions.ts'
+import { rotateMasterIfLarge } from './master-rotation.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
@@ -71,10 +73,31 @@ export class Runtime extends Service implements SourceHost {
   readonly outbox: Outbox
   readonly engine: Engine
   readonly passes: Passes
+  readonly reaper: SessionReaper
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
-  readonly masterId: string
+  /**
+   * The orchestrator's own Session.
+   *
+   * It changes when the Session is rotated, so it is read rather than captured: a rotation gives the orchestrator a fresh
+   * Session under a new identity, and every holder of this value follows it. The identity is memoized because it is read
+   * from several event handlers; `adoptMasterId` is the one write path, so the memo cannot go stale.
+   */
+  get masterId(): string { return this.masterIdMemo ?? (this.masterIdMemo = this.store.get(KV.runtime.masterId) ?? this.masterIdFallback) }
+  /**
+   * Moves the orchestrator's identity to another Session, durably and in the memo, so every holder follows it.
+   *
+   * @param sessionId - the identity the orchestrator adopts.
+   */
+  private adoptMasterId(sessionId: string): void {
+    this.store.set(KV.runtime.masterId, sessionId)
+    this.masterIdMemo = sessionId
+  }
+  /** The memoized identity, cleared whenever `adoptMasterId` changes it. */
+  private masterIdMemo?: string
+  /** The Session the orchestrator started with, used when the store holds no identity yet. */
+  private masterIdFallback = ''
   private readonly sourceLinks = new TextCache(200_000)
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
@@ -102,8 +125,9 @@ export class Runtime extends Service implements SourceHost {
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const feishu = () => setup.configured() && !!setup.deployment.feishu
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
-      const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
-      store.set(KV.runtime.masterId, masterId)
+      const masterId = this.masterIdFallback = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
+      // The starting identity goes through the one write path, so the memo and the store cannot disagree.
+      this.adoptMasterId(masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
       const board = this.board
       const effects = this.effects = new Effects(store, board)
@@ -116,10 +140,10 @@ export class Runtime extends Service implements SourceHost {
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
-      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, get masterId() { return runtime.masterId }, context: ctx,
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
-      const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
+      const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), get masterId() { return runtime.masterId },
         lifetime: this.lifetime,
         closing: () => this.closing(), environment,
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
@@ -131,10 +155,17 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
-        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+        deliver: (id, text) => sessions.prompt(runtime.masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
+      // Release the worker Sessions of tickets that ended, so their event logs stop occupying the orchestrator's heap.
+      const reaper = this.reaper = new SessionReaper({ context: ctx, masterId,
+        // A ticket a person ended may be resumed, and a resumed ticket reads its worker's history back.
+        resumable: ticketId => store.tickets.get(ticketId)?.ended?.by === 'human',
+        // The orchestrator Sessions a rotation superseded, kept durably so a later process reclaims them too.
+        superseded: () => store.get(KV.runtime.supersededMasterIds) ?? [],
+        afterCommit: action => store.afterCommit(action) })
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
@@ -151,6 +182,8 @@ export class Runtime extends Service implements SourceHost {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
           }
+          // The worker's Session of a ticket that ended for good is released once it goes idle.
+          if (event.type === 'ticket.ended') reaper.ticketEnded(event.data.ticketId)
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
@@ -208,6 +241,23 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
+    this.reaper.install()
+    // The orchestrator's own Session keeps its whole event log in memory, and a resumed Session is seeded with all of it.
+    // A Session whose stored log grew past the limit is rotated before it is loaded, so the large log never enters the
+    // heap, and the fresh Session is seeded with the compaction summary that carries its continuity.
+    const fresh = await rotateMasterIfLarge({ context: this.ctx, masterId: this.masterId, cwd: this.machine.stateDir,
+      title: 'dsh-superagent orchestrator', preset: ROUTER_PRESET })
+    if (fresh) {
+      // The orchestrator's identity moves to the fresh Session; the old one keeps its record on disk.
+      const superseded = this.masterId
+      this.adoptMasterId(fresh)
+      // The superseded identity is kept durably: the panel's session history can promote it in a later process too.
+      this.store.set(KV.runtime.supersededMasterIds, [...new Set([...(this.store.get(KV.runtime.supersededMasterIds) ?? []), superseded])])
+      // The panel's session history can promote the superseded Session back into memory, so it is released when it
+      // settles rather than kept for the rest of the process's life.
+      this.reaper.supersededByRotation(superseded)
+      this.runtimeHealth.set({ state: 'ready', detail: 'The orchestrator Session was rotated: its log grew past the limit, and the compaction summary carried its context.', at: now() })
+    }
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
@@ -219,8 +269,8 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks, setup, passes } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, get masterId() { return runtime.masterId }, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
@@ -259,6 +309,7 @@ export class Runtime extends Service implements SourceHost {
       await this.executor.shutdown()
       this.executor.dispose()
       this.sessions.dispose()
+      this.reaper.dispose()
       for (const dispose of this.disposers.reverse()) dispose()
       await this.ctx.sessionPersistence.flush()
     } finally {

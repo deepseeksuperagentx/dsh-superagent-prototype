@@ -55,7 +55,7 @@ async function api(method: string, path: string): Promise<{ status: number; body
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
-let agents: Map<string, { id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }; cancel: ReturnType<typeof vi.fn>; inject: ReturnType<typeof vi.fn> }>
+let agents: Map<string, { id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }; cancel: ReturnType<typeof vi.fn>; inject: ReturnType<typeof vi.fn>; scope: { dispose: ReturnType<typeof vi.fn> } }>
 const runTool = async (sessionId: string, name: string, args: unknown) => {
   const tool = tools.get(sessionId)?.get(name)
   if (!tool) throw new Error(`Tool ${name} is not registered for ${sessionId}`)
@@ -190,12 +190,21 @@ beforeEach(async () => {
           return at >= 0
         }) }
       const modelEvents: { type: string; data: unknown }[] = []
+      // DSH's agent scope carries the Session's lifetime; its disposal releases the Session.
+      const disposeScope = vi.fn(async () => {})
       const deliver = (mode: 'queue' | 'steer') => vi.fn((message: UserMessage) => {
         inbox[mode === 'queue' ? 'nextTurn' : 'nextStep'].push(message)
         deliveries({ sessionId, mode, id: message.id, text: message.content.map(block => block.type === 'text' ? block.text : '').join('') })
         agents.get(sessionId)!.status = 'running'
       })
-      agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel: vi.fn(), whenIdle: async () => {} } as never)
+      // DSH's cancel stops the turn: the agent goes idle, as its status change announces.
+      const cancel = vi.fn((_cause: unknown, _options?: { keepInbox?: boolean }) => {
+        const agent = agents.get(sessionId)!
+        if (agent.status === 'idle') return
+        agent.status = 'idle'
+        ctx.emit('agent/status', { agent, status: 'idle' } as never)
+      })
+      agents.set(sessionId, { id: sessionId, ctx: agentCtx, scope: { dispose: disposeScope }, inbox, followup: deliver('queue'), steer: deliver('steer'), status: 'idle', inject: vi.fn(), session: { id: sessionId, header: { agentPreset }, snapshotEvents: () => modelEvents, requestHeader: () => undefined, append: vi.fn((type: string, data: unknown) => { modelEvents.push({ type, data }) }) }, cancel, whenIdle: async () => {} } as never)
       bindScopeParent(agents.get(sessionId)!, preset)
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(async id => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }), rename: vi.fn(async () => {}),
@@ -315,6 +324,16 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'dropped', summary: 'too complex; recorded in #123' })
   expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ by: 'executor', outcome: 'dropped' }) })
   expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '看到这个问题我试了一下，能复现，修复需要较大改动，已记在 #123。' })).toEqual({ status: 'sent' })
+})
+
+it('releases the worker Session of a ticket that ended, so its event log stops occupying the orchestrator\'s heap', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const scope = agents.get(sessionId)!.scope.dispose
+  expect(scope).not.toHaveBeenCalled()
+  // The ticket ends for good: its worker's Session is released.
+  await runTool(sessionId, 'orchestrator_report', { state: 'dropped', summary: 'nothing to do here' })
+  expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ by: 'executor', outcome: 'dropped' }) })
+  await vi.waitFor(() => { expect(scope).toHaveBeenCalled() })
 })
 
 it('records worker reports, binds the task PR, ends the ticket on ready without a PR, and relays attention', async () => {
