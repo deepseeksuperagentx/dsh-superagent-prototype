@@ -3,6 +3,7 @@ import { SETUP_FIELDS } from '../../deployment.ts'
 import { KV } from '../../kv.ts'
 import { policyVersion } from '../../policy.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
+import type { Localized } from '../../sources/kind.ts'
 import { declaredVariables, executionRoot } from '../execution-environment.ts'
 import type { Store } from '../store.ts'
 import { problemOf, sourceHealth, type HealthMap, type SetupState } from './sources.ts'
@@ -28,12 +29,18 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
     blocks: { policy: block('policy', settings.policy), eval: block('eval', settings.eval), executor: block('executor',
       settings.executor) },
     sources: sources.instances(settings).map(instance => {
-      const kind = sources.kind(instance.kind)
+      // Setup-sensitive fields are declared per kind; the default instance's ID already is its kind's name.
+      const kindName = sources.instanceKindName(instance.id) ?? instance.kind
+      const kind = sources.kind(instance.id) ?? sources.kind(kindName)
       const problem = problemOf(instance.id, setup)
       const { id, title } = sourceHealth(sources, instance, health)
+      const repository = instance.config.repository
+      // `kind.facts(deployment)` describes the shared account; each card adds the repository its own instance watches.
+      const facts: Record<string, Localized | string> = { ...kind?.facts?.(setup.deployment) ?? {} }
+      if (typeof repository === 'string' && repository) facts.repository = repository
       return { id, kind: instance.kind, title, description: kind?.description ?? { zh: '', en: '' }, installed: instance.installed,
         value: { enabled: instance.enabled, config: instance.config }, revision: store.blockRevision(`source:${instance.id}`),
-        restarts: SETUP_FIELDS[instance.id] ?? [], fields: kind?.fields ?? [], facts: kind?.facts?.(setup.deployment) ?? {},
+        restarts: SETUP_FIELDS[kindName] ?? [], fields: kind?.fields ?? [], facts,
         labels: store.get(KV.sources.labels(instance.id)) ?? {}, ...problem ? { problem } : {}, ...policyOf(sources, instance.id, health) }
     }),
     environment: { root: executionRoot(settings, stateDir), variables: declaredVariables(sources, settings) },

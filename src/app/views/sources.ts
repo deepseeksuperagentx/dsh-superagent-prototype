@@ -9,15 +9,30 @@ import { dayAgo, snapshot, type ViewHost } from './records.ts'
 import { preview } from './text.ts'
 
 export type HealthMap = Record<string, Health>
-/** Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`. */
+/**
+ * Health entry names one Source instance reports: a kind's own entries for its default instance, the instance's own ID for every
+ * other mounted instance (each attach claims such an entry), and none for a stored configuration whose kind is not mounted here.
+ */
+export function instanceHealthNames(sources: SourceRegistry, instance: SourceInstance): string[] {
+  const kind = sources.kind(instance.id) ?? sources.kind(instance.kind)
+  if (!kind || kind.health.length === 0) return []
+  if (instance.id === kind.kind) return kind.health
+  return sources.instanceKindName(instance.id) ? [instance.id] : []
+}
+/**
+ * Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`.
+ * A non-default instance is named after its own ID so two cards of one kind stay distinguishable.
+ */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
-  const kind = sources.kind(instance.kind)
+  const kind = sources.kind(instance.id) ?? sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
-  const parts = (kind?.health ?? []).map(name => {
+  const parts = instanceHealthNames(sources, instance).map(name => {
     const entry = health[name]
     return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
   })
-  return { id: instance.id, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
+  const title = !kind ? { zh: instance.id, en: instance.id }
+    : instance.id === kind.kind ? kind.title : { zh: `${kind.title.zh} · ${instance.id}`, en: `${kind.title.en} · ${instance.id}` }
+  return { id: instance.id, title, health: parts }
 }
 export interface SetupState {
   /** Resolved deployment facts; undefined while waiting for initial setup. */
@@ -27,7 +42,11 @@ export interface SetupState {
   /** Feishu bot check failure that pauses only the Feishu Source. */
   feishuProblem?: SetupProblem | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
+/** The Source instance a setup problem names beside its place (the default instance needs no extra ID). */
+const instanceOf = (problem: SetupProblem): string | undefined => (problem as SetupProblem & { source?: string }).source
+/** The setup problem a Source instance reports: by its place (the kind's default instance) or by the instance ID its check recorded. */
+export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem]
+  .find(problem => problem && (problem.place === id || instanceOf(problem) === id))
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {
