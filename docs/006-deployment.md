@@ -213,6 +213,36 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
 ```
 
+## Multiple GitHub sources
+
+One installation can watch more than one repository with the same agent account, by mounting another instance of the GitHub Source in the profile's `cordis.patch.yml`. Each entry is the plugin, and its `instanceId` names the instance:
+
+```yaml
+# ~/.dsh/profiles/superagent/cordis.patch.yml
+- insert:
+    - id: dsh-superagent-github
+      name: dsh-superagent/github-watch
+    - id: dsh-superagent-github-sites
+      name: dsh-superagent/github-watch
+      config:
+        instanceId: github-sites
+```
+
+The first entry is the default instance, `github`; the second attaches `github-sites` to the same kind. Configure each in **Settings → Sources**, with the GitHub kind's fields described above: `repository` as `owner/name`, the agent CLI and the observation switches. Over the API each instance has its own settings block, `source:github` or `source:github-sites`, with its own `revision`.
+
+| Instance | Kind | Watches | Policy part | Health entry |
+| --- | --- | --- | --- | --- |
+| `github` | `github` | `acme/automation` | `policy.sources.github` | `github` |
+| `github-sites` | `github` | `acme/site-content` | `policy.sources['github-sites']` | `github-sites` |
+
+- Every Trigger, Thread, Channel, Policy part and health entry belongs to one instance. A Ticket of `source:github-sites` runs with `DSH_SUPERAGENT_GITHUB_REPOSITORY=acme/site-content`, and one of `source:github` with its own repository.
+- Cursors are per instance. The default instance copies its legacy `github-since` and `github-retry` values into the instance keys once, and keeps the old keys.
+- Setup checks each enabled GitHub instance's CLI, login and push access. A problem names the instance and its repository.
+- Instances mount when the plugin entry loads; the API cannot create one at runtime. Disable one with `enabled: false` on its settings block, or remove its plugin entry.
+- An entry without `instanceId` is the kind's default instance. An `instanceId` must match `[a-z][a-z0-9-]*`, and may equal the kind name only for that default.
+
+A single-instance profile needs no change: with only the bundled entry, the instance ID is `github`, and Thread keys, cursors, Policy parts and health names are the ones earlier versions stored. To roll back, delete the added plugin entry and `settings.sources['github-sites']` and `policy.sources['github-sites']`, then restart.
+
 ## Setup checks
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.

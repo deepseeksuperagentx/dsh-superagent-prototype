@@ -194,6 +194,21 @@ Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself 
 
 That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries.
 
+### Source instances
+
+A `SourceKind` is one implementation; a `SourceInstance` is one of its configurations, such as one repository or bot. `SourceRegistry` keeps `kinds` keyed by kind name and `attached` keyed by instance ID. `register` runs once per kind and claims the kind's health entries. `attach(instanceId, kindName)` mounts another instance: it claims a health entry named after the instance and returns a disposer for unmounting, refusing an unregistered kind or an ID already attached. The default instance's ID is the kind's name and needs no `attached` row, which is why a single-instance installation keeps its Thread keys, cursors and health names.
+
+Code resolves an identifier through the instance first: `kind(id)` and `instance(id)` look an instance ID up in `attached`, then fall back to a kind name, so call sites written for a kind keep working when its default instance is all there is. `instances(settings)` lists attached instances as `installed: true` plus stored configuration of kinds that are not installed as `installed: false`. `instanceKindName(id)` names the kind behind an instance, which `SETUP_FIELDS` lookups, views and Policy validation use.
+
+Instance identity reaches every shared record: Trigger, Thread, Channel and Actor `source` fields hold the instance ID, and Policy parts are keyed by it. `declarations()` returns one entry per installed instance with the instance ID in its `kind` field, and `environments()` one entry per enabled instance. The HTTP API exposes no create route; instances come from plugin mounts in the profile's `cordis.patch.yml`, and `PUT settings/source:<instanceId>` saves each one independently.
+
+Per-instance state:
+
+- **Health.** Each mounted instance claims a health entry named after its ID; the default instance reports on the kind's own entries, such as `github`. Removing the mount releases the entry.
+- **Cursors.** KV keys are instance-scoped: `github-since:<instance>`, `github-retry:<instance>`, `github-cursor:<instance>:<page>`, `github-stream:<instance>:<stream>`, `github-ci:<instance>:<n>` and `github-branch-ci:<instance>`. The default instance copies the legacy `github-since` and `github-retry` values into its new keys once, at its first poll round, and leaves the old keys, so an upgrade neither replays history nor loses its place.
+- **Environment.** A GitHub instance's `environment.values` reads its own `config.repository`; `environmentOf` injects only the environment of the Ticket's source instance, and an agentless call merges enabled instances by variable key, recording a conflict as a warning instead of silently overwriting.
+- **Setup.** `SETUP_FIELDS` stays keyed by kind name (`github`, `feishu`); `checkAccounts` checks every enabled GitHub instance's CLI, login and push access, and names the instance and repository in a problem.
+
 ### DshExecutor
 
 `DshExecutor` (`src/executor/dsh.ts`) provides one Session and directory per Ticket. `start` and `deliver` enqueue `launch` and `delivery` effects. `stop` cancels the turn through `Store.afterCommit`, so a rolled-back end does not stop the worker.
@@ -442,6 +457,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
+| `tests/registry-instances.spec.ts` | The registry split into kinds and instances: a second instance of one kind with its own configuration, attach refusals, instance resolution for Triggers, Channels, Threads and Scope, Policy parts and environment declared per instance, health entries named by instance, and stored pre-multi-instance configuration without `kind` |
+| `tests/execution-environment-instance.spec.ts` | A Ticket's environment from its source instance only, the other kinds kept, and an agentless call that keeps the first value and warns instead of overwriting a duplicate key |
+| `tests/settings-instance.spec.ts` | Settings cards and health per instance: two independent cards with their own config, revision, facts and title, restart-sensitive fields looked up by kind name, one environment group per instance, and an uninstalled instance without another instance's health |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/webhook.spec.ts` | The webhook Source on a `SourceContext`: events into Triggers, the inbox round and its receipts, the gate's inferred candidate, callback replies, and its plugin entry's health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
