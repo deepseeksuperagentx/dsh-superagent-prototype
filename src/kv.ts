@@ -84,7 +84,7 @@ export interface CursorRecords {
   set<V>(key: Key<V>, value: V | undefined): void
   keys<V>(family: Family<V, never>): Key<V>[]
 }
-/** Version recorded in `KV.github.migrated` once the legacy cursors were copied; future migrations of this kind bump it. */
+/** Presence of `KV.github.migrated` (any value, currently `1`) marks the one-time legacy cursor copy as done; the guard is presence-only, so a future migration needs its own key. */
 const GITHUB_MIGRATION = 1
 /**
  * Copies the read positions the single-instance GitHub Source left under the legacy keys into the default instance's keys.

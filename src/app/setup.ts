@@ -85,7 +85,8 @@ export class Setup {
     for (const { id, config } of instancesOf(settings, 'github')) {
       await resolveDeployment(machine, config, probe).catch((error: unknown) => {
         if (!(error instanceof SetupError)) throw error
-        throw new SetupError(error.code, error.values, id)
+        // A kind's default instance keeps the setup message it has always had; only an added instance names itself.
+        throw new SetupError(error.code, error.values, id === 'github' ? undefined : id)
       })
     }
   }
