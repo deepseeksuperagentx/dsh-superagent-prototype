@@ -83,7 +83,7 @@ export interface TriggerContext {
 }
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
-  /** Stable ID; a default instance with the same ID exists when none is stored. */
+  /** Stable ID of the implementation; its default instance, and any other instance mounted on it, share it (see SourceInstance). */
   kind: string
   title: Localized
   description: Localized
@@ -112,4 +112,5 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   environment?: { variables: readonly VariableSpec[]; values(input: EnvironmentInput<C>): Record<string, string> }
 }
 
+/** One configured instance: `id` is its own key (the default instance's ID is the kind's name), `kind` the implementation mounted for it. */
 export interface SourceInstance<C extends Record<string, unknown> = Record<string, unknown>> { id: string; kind: string; enabled: boolean; config: C }
