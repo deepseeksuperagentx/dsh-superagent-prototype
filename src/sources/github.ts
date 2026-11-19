@@ -25,7 +25,7 @@ const NotificationSchema = z.looseObject({
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
-  observeCi: z.boolean().default(false) }).strict()
+  observeCi: z.boolean().default(false), acceptSelfIssues: z.boolean().default(false) }).strict()
 export type GithubConfig = z.infer<typeof GithubConfigSchema>
 const OBSERVED = { issues: 'observeIssues', pulls: 'observePulls', comments: 'observeComments', ci: 'observeCi' } as const
 type Scope = keyof typeof OBSERVED
@@ -54,7 +54,9 @@ export const githubKind: SourceKind<GithubConfig> = {
     { key: 'observeComments', type: 'switch', label: { zh: '接收仓库里的评论', en: 'Receive comments in the repository' },
       hint: { zh: '打开后，Issue 和 PR 上没有 @ 智能体的评论和代码评论也会收到，由策略的接收表决定是否成为候选。', en: 'Comments and review comments on Issues and PRs that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates.' } },
     { key: 'observeCi', type: 'switch', label: { zh: '接收默认分支的 CI', en: 'Receive the default branch\'s CI' },
-      hint: { zh: '打开后，默认分支的 CI 失败和恢复会收到，由策略的接收表决定是否成为候选。', en: 'Failures of the default branch\'s CI, and its recovery, are received, and the Policy\'s admission table decides whether they become candidates.' } }],
+      hint: { zh: '打开后，默认分支的 CI 失败和恢复会收到，由策略的接收表决定是否成为候选。', en: 'Failures of the default branch\'s CI, and its recovery, are received, and the Policy\'s admission table decides whether they become candidates.' } },
+    { key: 'acceptSelfIssues', type: 'switch', label: { zh: '接收智能体自己创建的 Issue', en: 'Receive Issues the agent opens itself' },
+      hint: { zh: '默认关闭。打开后，智能体账号自己创建的 Issue 也会成为 Trigger，用于智能体自己建单推进工作；只对 Issue 生效：自己的 PR 和自己的评论仍不接收，避免回环。', en: 'Off by default. When on, Issues the agent account opens itself also become Triggers, so the agent can open Issues that track its own work; it applies to Issues only: the agent\'s own pull requests and comments are still not received, which would loop.' } }],
   // What the Source observes across the repository it receives in full; elsewhere, only what addresses the agent.
   scope: ({ meta }, config) => {
     const row = scopeOf(meta)
@@ -284,15 +286,18 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
   for (const item of items) {
     // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
     if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
-    if (sameName(item.user.login, login)) continue
     if (id === 'issues') {
       const issue = IssueSchema.safeParse(item)
       const pr = issue.success && !!issue.data.pull_request
       if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
+      // The agent's own Issues are its own work orders when the instance accepts them; its own pull requests never are.
+      if (sameName(issue.data.user.login, login) && (pr || !config.acceptSelfIssues)) continue
       await receive(ctx, round, pr ? pullTrigger(issue.data, login, round.instance) : issueTrigger(issue.data, login, round.instance))
       nameThread(ctx, round.instance, issue.data.number, issue.data.title)
       continue
     }
+    // Comments the agent writes are never a request to itself, so reading them back would loop.
+    if (sameName(item.user.login, login)) continue
     const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
     if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
     const isPr = id === 'review-comments' || /\/pull\//.test(item.html_url ?? '')
@@ -409,16 +414,20 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
 }
 async function readNotified(ctx: SourceContext, round: Round, number: number, item: Retry): Promise<void> {
   const { since } = item
+  // The instance's switch for the agent's own Issues; read here because the notification path has no per-stream config.
+  const acceptSelfIssues = ctx.config<GithubConfig>(round.instance)?.acceptSelfIssues ?? false
   let isPr = item.pr
   if (!isPr) {
     const issue = await ctx.commands.withSignal(round.signal).api(IssueSchema, `issues/${number}`)
     // `issues/<n>` also returns PRs with `pull_request` set; handle them in the PR branch below.
     isPr = !!issue.pull_request
     if (!isPr) {
-      // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
-      // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
+      // An Issue opened since the cursor brings its body so a mention in it reaches the gate: by someone else, or by the agent
+      // itself when the instance accepts the agent's own Issues as work orders. A mention added by a later edit to the body is
+      // not read: only the author can be the actor of the body.
       const { login } = ctx.deployment.github
-      const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
+      const opened = Date.parse(issue.created_at) >= Date.parse(since)
+        && (acceptSelfIssues || !sameName(issue.user.login, login))
       if (opened) await receive(ctx, round, issueTrigger(issue, login, round.instance))
       await intakeComments(ctx, { number, isPr: false, url: issue.html_url }, since, round)
       nameThread(ctx, round.instance, number, issue.title)

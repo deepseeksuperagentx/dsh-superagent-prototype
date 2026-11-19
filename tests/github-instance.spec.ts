@@ -85,6 +85,33 @@ const stubReads = () => vi.spyOn(Commands.prototype, 'run').mockImplementation(a
   return JSON.stringify([])
 })
 
+/** A time relative to now, as GitHub returns timestamps; stream ranges in these tests stay inside the poll horizon. */
+const at = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString()
+/** Settings of the two instances, with the default instance's GitHub switches as given (the second instance keeps its own). */
+const settingsWith = (config: Record<string, unknown> = {}) => SettingsSchema.parse({
+  sources: {
+    github: { enabled: true, config: { repository: LAB, cli: 'gh', ...config } },
+    'github-sites': { kind: 'github', enabled: true, config: { repository: SITES, cli: 'gh' } },
+  },
+  policy: { sources: { github: { allowed: [{ id: 'alice' }] }, 'github-sites': { allowed: [{ id: 'alice' }] } } },
+})
+/** An Issue or PR as the repository-wide issues stream lists it; a PR carries `pull_request`. */
+const streamItem = (repository: string, number: number, login: string, time: string, pr = false) => ({ id: 1000 + number, number,
+  title: 'Track network', body: '@agent-bot work', state: 'open', created_at: time, updated_at: time,
+  html_url: `https://github.com/${repository}/issues/${number}`, user: { login, type: 'User' }, ...pr ? { pull_request: { url: 'x' } } : {} })
+/** The repository-wide reads: notifications, the issues and comments streams (with HTTP headers, as `--include` reads), and one Issue. */
+const repositoryReads = (lists: { notifications?: unknown[]; issues?: unknown[]; comments?: unknown[]; issue?: unknown }) =>
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+    const path = args[1] ?? ''
+    if (path.includes('/notifications')) return `HTTP/2.0 200 OK\r\nX-Poll-Interval: 60\r\n\r\n${JSON.stringify(lists.notifications ?? [])}`
+    if (args.includes('--include')) {
+      const listed = /\/issues\?/.test(path) ? lists.issues : /\/issues\/comments\?/.test(path) ? lists.comments : undefined
+      return `HTTP/2.0 200 OK\r\n\r\n${JSON.stringify(listed ?? [])}`
+    }
+    if (/\/issues\/\d+$/.test(path)) return JSON.stringify(lists.issue ?? {})
+    return JSON.stringify([])
+  })
+
 /** A live ticket whose originating Trigger is `trigger`, as the Engine stores it after accepting one. */
 const ticketOf = (id: string, trigger: Trigger, execution: string): Ticket => ({ id, title: 'Fix the margin', decisionId: `d-${id}`,
   mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: trigger.source, id: 'alice' }, scope: '' },
@@ -315,4 +342,65 @@ it('reports a PR close only to the Tickets following that instance\'s Thread, no
   h.store.tickets.save({ ...ticketOf('site-ticket', request, 'fix-12'), follows: [{ thread: 'github-sites:12', own: true }] })
   await observePull(context, pr, 'github-sites')
   expect(h.threadClosed).toHaveBeenCalledWith({ source: 'github-sites', id: '12' }, 'merged', '2026-09-09T00:00:00Z')
+})
+
+it('receives an Issue the agent opens itself only when the instance accepts self Issues, never its own pull request', async () => {
+  const h = hostOf()
+  // The switch is off by default, so an upgraded installation keeps exactly its earlier behavior.
+  expect(githubKind.schema.parse({ repository: LAB, cli: 'gh' })).toMatchObject({ acceptSelfIssues: false, observeIssues: false })
+  h.store.saveSettings(settingsWith({ observeIssues: true, observePulls: true }))
+  const start = at(-3_600_000)
+  h.store.set('github-since:github', start)
+  h.store.set('github-stream:github:issues', { since: start, started: { issues: start, pulls: start } })
+  repositoryReads({ issues: [streamItem(LAB, 12, 'agent-bot', at(-60_000)), streamItem(LAB, 13, 'agent-bot', at(-60_000), true),
+    streamItem(LAB, 14, 'carol', at(-60_000))] })
+  await pollRound(sourceContext(h.host, githubKind, 'github'), undefined, 'github')
+  // Off: the agent's own Issue and pull request are skipped, while another person's Issue is received as before.
+  expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([14])
+  // On: the same list at a fresh stream position, where the self Issue becomes a Trigger and its own pull request still does not.
+  h.store.set('github-since:github', start)
+  h.store.set('github-stream:github:issues', { since: start, started: { issues: start, pulls: start } })
+  h.store.saveSettings(settingsWith({ observeIssues: true, observePulls: true, acceptSelfIssues: true }))
+  h.receive.mockClear()
+  await pollRound(sourceContext(h.host, githubKind, 'github'), undefined, 'github')
+  expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.source, trigger.actor.id, trigger.human]))
+    .toEqual([[12, 'github', 'agent-bot', false], [14, 'github', 'carol', true]])
+  expect(store.threads.get('github:12')?.ref).toEqual({ source: 'github', id: '12' })
+})
+
+it('still skips the agent\'s own pull requests and comments when it accepts self Issues', async () => {
+  const h = hostOf()
+  h.store.saveSettings(settingsWith({ observeIssues: true, observePulls: true, observeComments: true, acceptSelfIssues: true }))
+  const start = at(-3_600_000)
+  h.store.set('github-since:github', start)
+  h.store.set('github-stream:github:issues', { since: start, started: { issues: start, pulls: start } })
+  h.store.set('github-stream:github:comments', { since: start, started: { comments: start } })
+  repositoryReads({ issues: [streamItem(LAB, 21, 'carol', at(-60_000)), streamItem(LAB, 22, 'agent-bot', at(-60_000), true)],
+    comments: [{ id: 900, body: 'note to self', user: { login: 'agent-bot', type: 'User' },
+      issue_url: `https://api.github.com/repos/${LAB}/issues/21`, html_url: `https://github.com/${LAB}/issues/21#issuecomment-900`,
+      created_at: at(-60_000), updated_at: at(-60_000) }] })
+  await pollRound(sourceContext(h.host, githubKind, 'github'), undefined, 'github')
+  // Only the other person's Issue: the self-authored pull request and the self comment would loop back into the agent.
+  expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind])).toEqual([[21, 'issue']])
+})
+
+it('reads a self-opened Issue from a notification only when the instance accepts self Issues', async () => {
+  const h = hostOf()
+  const self = { id: 1200, number: 12, title: 'Track network', body: '@agent-bot work', state: 'open',
+    created_at: at(-60_000), updated_at: at(-60_000), html_url: `https://github.com/${LAB}/issues/12`, user: { login: 'agent-bot', type: 'User' } }
+  const notification = { id: 'n1', updated_at: at(-30_000), reason: 'subscribed', repository: { full_name: LAB },
+    subject: { url: `https://api.github.com/repos/${LAB}/issues/12`, type: 'Issue', title: 'Track network' } }
+  h.store.set('github-since:github', at(-3_600_000))
+  repositoryReads({ notifications: [notification], issue: self })
+  await pollRound(sourceContext(h.host, githubKind, 'github'), undefined, 'github')
+  // Off: the notification of the agent's own Issue reads nothing into the Engine.
+  expect(h.receive).not.toHaveBeenCalled()
+  // On: re-reading the same notification now yields the Trigger, still authored by the agent and not human.
+  h.store.saveSettings(settingsWith({ acceptSelfIssues: true }))
+  h.store.set('github-since:github', at(-3_600_000))
+  h.store.delete('github-cursor:github:12')
+  h.receive.mockClear()
+  await pollRound(sourceContext(h.host, githubKind, 'github'), undefined, 'github')
+  expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.actor.id, trigger.human]))
+    .toEqual([[12, 'issue', 'agent-bot', false]])
 })
