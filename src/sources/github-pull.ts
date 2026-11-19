@@ -89,7 +89,7 @@ function bind(ctx: SourceContext, ticketId: string, pr: Pull, own: boolean, sour
  * Their subscription to the PR stays so a later human comment there resumes the ticket.
  */
 function closePull(ctx: SourceContext, pr: Pull, source = SOURCE): void {
-  if (!ctx.tickets.open().some(ticket => pullsOf(ticket, true).includes(pr.number))) return
+  if (!ctx.tickets.open().some(ticket => followsPull(ticket, source, pr.number))) return
   const at = pr.merged_at ?? pr.closed_at ?? new Date().toISOString()
   ctx.tickets.threadClosed({ source, id: String(pr.number) }, pr.merged ? 'merged' : 'closed', at)
 }

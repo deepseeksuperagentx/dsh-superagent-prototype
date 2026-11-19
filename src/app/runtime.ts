@@ -56,11 +56,13 @@ const now = (): string => new Date().toISOString()
 
 /**
  * The repository a GitHub Source instance's links and reads address: its own configured repository, while the default
- * instance (and a Source of another kind) keeps the deployment repository. A second instance's PR links to its own repository.
+ * instance (whose ID is its kind's name, and which setup canonicalized into the deployment) keeps the deployment repository.
+ * A second instance's PR therefore links to its own repository.
  */
 export function instanceRepository(sources: Pick<SourceRegistry, 'instance'>, deployment: Deployment, source: string): string {
   const instance = sources.instance<{ repository?: string }>(source)
-  return instance?.kind === 'github' && instance.config.repository ? instance.config.repository : deployment.repository
+  if (!instance || instance.id === instance.kind) return deployment.repository
+  return instance.config.repository || deployment.repository
 }
 
 /**
@@ -164,6 +166,7 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+        repositoryOf: source => instanceRepository(sources, setup.deployment, source),
         deliver: (id, text) => sessions.prompt(runtime.masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this

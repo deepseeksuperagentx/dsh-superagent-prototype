@@ -58,6 +58,8 @@ export interface AssessorHost {
   paused(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
+  /** The repository a Source instance's reads address: its own for a second instance, the deployment's for the default one. */
+  repositoryOf(source: string): string
   /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
   deliver(requestId: string, text: string): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
@@ -228,6 +230,9 @@ export class MasterAssessor implements Assessor {
       const { cache } = this.reads(candidate.evalId, trigger)
       const { snapshots, images, messages, cursors } = cache
       const commands = this.host.commands.withSignal(AbortSignal.any([this.controller.signal, signal]))
+      // A repository read addresses the Trigger's own Source instance: a second GitHub instance reads its own repository, not
+      // the default one the deployment resolved (the default instance resolves to that repository, so single-instance reads are unchanged).
+      const repositoryCommands = commands.forRepository(this.host.repositoryOf(trigger.source))
       if (read.resource === 'image') {
         if (read.offset !== 0) throw new Error('Images are not paginated; use offset 0')
         const image = images.get(read.image_id!)
@@ -263,7 +268,7 @@ export class MasterAssessor implements Assessor {
         body = JSON.stringify({ images: references, next_read: next, ...result.body })
       }
       else {
-        body = await readRepositoryPath(commands, read.path!, read.resource === 'directory' ? 'directory' : 'file')
+        body = await readRepositoryPath(repositoryCommands, read.path!, read.resource === 'directory' ? 'directory' : 'file')
       }
       snapshots.set(cacheKey, body)
       return textPage(read.resource, body, read.offset, 4000)

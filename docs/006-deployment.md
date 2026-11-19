@@ -236,7 +236,7 @@ The first entry is the default instance, `github`; the second attaches `github-s
 | `github-sites` | `github` | `acme/site-content` | `policy.sources['github-sites']` | `github-sites` |
 
 - Every Trigger, Thread, Channel, Policy part and health entry belongs to one instance. A Ticket of `source:github-sites` runs with `DSH_SUPERAGENT_GITHUB_REPOSITORY=acme/site-content`, and one of `source:github` with its own repository.
-- Cursors are per instance. The default instance copies its legacy `github-since` and `github-retry` values into the instance keys once, and keeps the old keys.
+- Cursors are per instance. At its first poll round the default instance copies its legacy `github-since`, `github-retry`, `github-branch-ci`, `github-cursor:<n>`, `github-stream:<stream>` and `github-ci:<n>` values into the instance keys once, records that in `github-migrated:github`, and keeps the old keys. Because the copy is marked, an observation stream switched off and on again starts from the switch-on time instead of being re-seeded from the upgraded installation's legacy baseline.
 - Setup checks each enabled GitHub instance's CLI, login and push access. A problem names the instance and its repository.
 - Instances mount when the plugin entry loads; the API cannot create one at runtime. Disable one with `enabled: false` on its settings block, or remove its plugin entry.
 - An entry without `instanceId` is the kind's default instance. An `instanceId` must match `[a-z][a-z0-9-]*`, and may equal the kind name only for that default.

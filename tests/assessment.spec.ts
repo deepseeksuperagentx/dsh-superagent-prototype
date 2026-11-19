@@ -20,6 +20,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const commands = {
     repository: 'acme/widgets', deployment: testDeployment(),
     withSignal() { return commands },
+    forRepository() { return commands },
     gh: vi.fn(async (args: string[]) => {
       await gate.issue
       const number = Number(/issues\/(\d+)/.exec(args[1]!)?.[1])
@@ -39,6 +40,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
+    repositoryOf: () => 'acme/widgets',
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }
   const assessor = new MasterAssessor(host)

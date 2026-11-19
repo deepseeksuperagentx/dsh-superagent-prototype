@@ -35,7 +35,9 @@ export class SetupError extends Error {
   constructor(readonly code: SetupCode, readonly values: Record<string, string> = {}, readonly source?: string) {
     const [place, text] = SETUP_PROBLEMS[code]
     const sentence = fill(text, values)
-    super(values.output ? `${sentence}\n${values.output}` : sentence)
+    // A check of one instance among several names it in the human-readable message too, so a panel error or a log line says
+    // which card failed even though the structured problem carries the source as well.
+    super(`${source ? `[${source}] ` : ''}${values.output ? `${sentence}\n${values.output}` : sentence}`)
     this.place = place
   }
   get problem(): SetupProblem {

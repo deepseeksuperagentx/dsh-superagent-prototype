@@ -34,6 +34,8 @@ it('spells each instance\'s read positions with its instance ID, beside the lega
   expect(KV.github.cursorByInstance('github', 12)).toBe('github-cursor:github:12')
   expect(KV.github.since).toBe('github-since')
   expect(KV.github.cursor(12)).toBe('github-cursor:12')
+  // The one-time migration marker is per instance as well.
+  expect(KV.github.migrated(instance)).toBe('github-migrated:github-sites')
 })
 
 it('copies every legacy read position into the default instance\'s keys once, leaving the legacy keys as they were', () => {
@@ -72,6 +74,20 @@ it('copies nothing over a read position the instance has already moved, and neve
   // A second run of the same migration changes nothing.
   migrateLegacyGithubCursors(records(), 'github')
   expect(store.get(KV.github.sinceByInstance('github'))).toBe('2026-09-09T00:00:00.000Z')
+})
+
+it('migrates once: a stream cursor deleted when its observation is switched off is not seeded from the legacy key again', () => {
+  store.set(KV.github.stream('issues'), { since: '2026-09-05T00:00:00.000Z', started: { issues: '2026-09-05T00:00:00.000Z' } })
+  migrateLegacyGithubCursors(records(), 'github')
+  expect(store.get(KV.github.migrated('github'))).toBe(1)
+  expect(store.get(KV.github.streamByInstance('github', 'issues'))?.since).toBe('2026-09-05T00:00:00.000Z')
+  // Switching the observation off deletes the instance's stream cursor (as `pollRepository` does), and the legacy key stays.
+  records().set(KV.github.streamByInstance('github', 'issues'), undefined)
+  migrateLegacyGithubCursors(records(), 'github')
+  // The marker keeps the old baseline from coming back, so switching it on again starts from the switch-on time instead of
+  // scanning (and re-triggering) the upgraded installation's 14-day horizon.
+  expect(store.get(KV.github.streamByInstance('github', 'issues'))).toBeUndefined()
+  expect(store.get(KV.github.migrated('github'))).toBe(1)
 })
 
 it('leaves the legacy positions to the default instance, so another instance starts reading from when it is mounted', () => {

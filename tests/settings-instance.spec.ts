@@ -53,9 +53,10 @@ describe('settings view of two Source instances of one kind', () => {
     // The default instance keeps the kind's title; a second instance names itself after its ID.
     expect(cards.map(card => card.title)).toEqual([{ zh: 'GitHub', en: 'GitHub' },
       { zh: 'GitHub · github-sites', en: 'GitHub · github-sites' }])
-    // Facts describe the shared account plus the repository each card's own instance watches.
+    // Facts describe the shared account plus the repository each card's own instance watches: the default instance reports the
+    // deployment's canonical repository, while the second instance reports its own configuration.
     expect(cards.map(card => [card.facts.cli, card.facts.repository]))
-      .toEqual([['Current account @agent-bot', 'acme/lab'], ['Current account @agent-bot', 'acme/sites']])
+      .toEqual([['Current account @agent-bot', 'acme/widgets'], ['Current account @agent-bot', 'acme/sites']])
   })
   it('looks each card\'s restart-sensitive fields up by kind name, and declares one environment group per instance', () => {
     const { cards } = view()

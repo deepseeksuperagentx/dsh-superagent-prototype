@@ -66,7 +66,9 @@ export const KV = {
     cursorByInstance: family<string, [instance: string, number: number]>('github-cursor:'),
     streamByInstance: family<GithubStream, [instance: string, stream: string]>('github-stream:'),
     branchCiByInstance: family<GithubBranchCi, [instance: string]>('github-branch-ci:'),
-    ciByInstance: family<GithubCi, [instance: string, number: number]>('github-ci:') },
+    ciByInstance: family<GithubCi, [instance: string, number: number]>('github-ci:'),
+    /** Set once the default instance's legacy cursors were copied, so a read position it later deletes is never copied again. */
+    migrated: family<number, [instance: string]>('github-migrated:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
@@ -82,16 +84,21 @@ export interface CursorRecords {
   set<V>(key: Key<V>, value: V | undefined): void
   keys<V>(family: Family<V, never>): Key<V>[]
 }
+/** Version recorded in `KV.github.migrated` once the legacy cursors were copied; future migrations of this kind bump it. */
+const GITHUB_MIGRATION = 1
 /**
  * Copies the read positions the single-instance GitHub Source left under the legacy keys into the default instance's keys.
- * Each copy happens only while the instance's own key is still absent, so upgraded installations neither replay history nor
- * read a cursor this instance has since moved; the legacy keys stay as they were, for a rollback and for reference.
- * Another instance has no legacy position: its read starts when it is mounted, as a Source newly switched on does.
+ * The copy happens once, recorded by `KV.github.migrated`: the legacy keys stay as they were for a rollback and for reference,
+ * while a read position the instance later deletes (such as a stream cursor whose observation was switched off) is not copied
+ * again, so switching a stream back on starts from when it was switched on instead of replaying the upgraded installation.
+ * Each copy also leaves an instance key that already exists, and another instance has no legacy position: its read starts when
+ * it is mounted, as a Source newly switched on does.
  * @param state - the GitHub Source's KV access, such as `SourceContext.state`
  * @param instance - the instance ID whose polling round is starting
  */
 export function migrateLegacyGithubCursors(state: CursorRecords, instance: string): void {
   if (instance !== DEFAULT_GITHUB_INSTANCE) return
+  if (state.get(KV.github.migrated(instance)) !== undefined) return
   const copy = <V>(legacy: Key<V>, current: Key<V>): void => {
     const value = state.get(legacy)
     if (value !== undefined && state.get(current) === undefined) state.set(current, value)
@@ -117,4 +124,6 @@ export function migrateLegacyGithubCursors(state: CursorRecords, instance: strin
     if (!/^\d+$/.test(number)) continue
     copy(name as Key<GithubCi>, KV.github.ciByInstance(instance, Number(number)))
   }
+  // The marker comes last: a crash during the copy leaves it unset, and the next round copies the remaining keys.
+  state.set(KV.github.migrated(instance), GITHUB_MIGRATION)
 }

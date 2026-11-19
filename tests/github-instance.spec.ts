@@ -12,7 +12,7 @@ import { Commands } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { apply, githubKind, pollRound, type GithubConfig } from '../src/sources/github.ts'
-import { pullEndNotices } from '../src/sources/github-pull.ts'
+import { observePull, pullEndNotices } from '../src/sources/github-pull.ts'
 import { pullTrigger } from '../src/sources/github-trigger.ts'
 import { setupChanged } from '../src/app/setup.ts'
 import { sourceContext, type SourceHost } from '../src/sources/host.ts'
@@ -57,13 +57,13 @@ function hostOf(configured: () => boolean = () => true) {
     }
     return 'stored' as const
   })
-  const bindThread = vi.fn()
-  const deps: SourceContextDeps = { store, engine: { bindThread, threadClosed: vi.fn() } as never,
+  const bindThread = vi.fn(), threadClosed = vi.fn()
+  const deps: SourceContextDeps = { store, engine: { bindThread, threadClosed } as never,
     outbox: { send: vi.fn() } as never, commands, sources, deployment, ready: Promise.resolve(), configured, receive }
   const host = { ...deps, sources, context: (kind: { kind: string; health: readonly string[] }) => sourceContextOf(deps, kind) }
   sources.register(githubKind)
   sources.attach('github', 'github'); sources.attach('github-sites', 'github')
-  return { host: host as unknown as SourceHost, board, sources, commands, receive, bindThread, deployment, store }
+  return { host: host as unknown as SourceHost, board, sources, commands, receive, bindThread, threadClosed, deployment, store }
 }
 
 /** An Issue of `repository` as GitHub returns it, opened by alice with a mention of the agent. */
@@ -161,10 +161,11 @@ it('gives each instance an environment naming that instance\'s repository, and t
     .toEqual({ DSH_SUPERAGENT_GITHUB_REPOSITORY: SITES, DSH_SUPERAGENT_GITHUB_ACCOUNT: 'agent-bot',
       DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: '7+agent-bot@users.noreply.github.com', DSH_SUPERAGENT_GITHUB_NUMBER: '12',
       DSH_SUPERAGENT_GITHUB_PR_HEAD: 'refs/pull/12/head' })
-  // The default instance's Trigger fills its own environment, and its repository comes from its configuration as well.
-  expect(values({ deployment, config: labConfig, instance: 'github',
+  // The default instance's repository is the deployment's, which setup canonicalized from its configuration: a stale stored
+  // name (a former repository name, or one with different case) does not reach the worker's environment.
+  expect(values({ deployment: { ...deployment, repository: 'acme/canonical' }, config: labConfig, instance: 'github',
     trigger: { ...sitesTrigger, source: 'github', threads: [{ source: 'github', id: '12' }] } }))
-    .toMatchObject({ DSH_SUPERAGENT_GITHUB_REPOSITORY: LAB, DSH_SUPERAGENT_GITHUB_NUMBER: '12' })
+    .toMatchObject({ DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/canonical', DSH_SUPERAGENT_GITHUB_NUMBER: '12' })
   // A message of another Source leaves the GitHub number empty.
   expect(values({ deployment, config: labConfig, instance: 'github',
     trigger: { ...sitesTrigger, source: 'feishu', threads: [{ source: 'feishu', id: 'oc_1' }] } }).DSH_SUPERAGENT_GITHUB_NUMBER).toBe('')
@@ -268,7 +269,50 @@ it('links a PR end notice to its own instance\'s repository, the default instanc
     ended: { at: '2026-09-09T00:00:00Z', by: 'executor', outcome: 'merged' }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '', updatedAt: '' })
   const linkOf = (thread: string) => pullEndNotices(ended(thread), '修一下', source => instanceRepository(h.sources, h.deployment, source))[0]!.text
   expect(linkOf('github-sites:12')).toContain(`https://github.com/${SITES}/pull/12`)
-  // The default instance and a Source of another kind keep the deployment repository.
+  // The default instance and a Source of another kind keep the deployment repository, even when the stored configuration
+  // still names a former name or different case (the deployment is the canonical one setup resolved).
   expect(linkOf('github:12')).toContain(`https://github.com/${LAB}/pull/12`)
   expect(instanceRepository(h.sources, h.deployment, 'feishu')).toBe(LAB)
+  expect(instanceRepository(h.sources, { ...h.deployment, repository: 'acme/canonical' }, 'github')).toBe('acme/canonical')
+})
+
+it('reads a second instance\'s Thread context in its own repository, while the default instance keeps the caller\'s repository', async () => {
+  const h = hostOf()
+  const triggerOf = (source: string) => pullTrigger({ number: 12, title: 'Fix the margin', body: '@agent-bot fix',
+    user: { login: 'alice', type: 'User' }, created_at: '2026-09-09T00:00:00Z',
+    html_url: `https://github.com/${source === 'github' ? LAB : SITES}/pull/12` }, 'agent-bot', source)
+  const read: string[] = []
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+    const path = args[1] ?? ''
+    read.push(path)
+    return /\/issues\/12$/.test(path) ? JSON.stringify({ id: 1200, number: 12, title: 'Fix the margin', state: 'open',
+      created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/${SITES}/pull/12`, user: { login: 'alice' } }) : JSON.stringify([])
+  })
+  // The assessment's commands address the default deployment; the registry scopes them to the Trigger's instance.
+  const commands = new Commands(() => h.deployment, {}, new AbortController().signal)
+  await h.sources.threadContext(triggerOf('github-sites'))!.read(commands, 'thread', undefined)
+  expect(read).toContain(`repos/${SITES}/issues/12`)
+  expect(read.some(path => path.startsWith(`repos/${LAB}/`))).toBe(false)
+  // The default instance keeps the caller's commands, so single-instance reads are unchanged.
+  read.length = 0
+  await h.sources.threadContext(triggerOf('github'))!.read(commands, 'thread', undefined)
+  expect(read).toContain(`repos/${LAB}/issues/12`)
+})
+
+it('reports a PR close only to the Tickets following that instance\'s Thread, not another instance\'s same number', async () => {
+  const h = hostOf()
+  const request = pullTrigger({ number: 12, title: 'Fix the margin', body: '@agent-bot fix', user: { login: 'alice', type: 'User' },
+    created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/${SITES}/pull/12` }, 'agent-bot', 'github-sites')
+  h.store.triggers.save(request)
+  h.store.tickets.save({ ...ticketOf('lab-ticket', request, 'fix-12'), follows: [{ thread: 'github:12', own: true }] })
+  const pr = { number: 12, title: 'Fix the margin', state: 'closed', merged: true, merged_at: '2026-09-09T00:00:00Z',
+    html_url: `https://github.com/${SITES}/pull/12`, user: { login: 'carol' }, head: { sha: 'abc', ref: 'fix', repo: { full_name: SITES } } }
+  const context = h.host.context({ kind: 'github', health: ['github'] })
+  await observePull(context, pr, 'github-sites')
+  // The lab Ticket follows github:12, not github-sites:12: the second instance's same-number PR does not reach it.
+  expect(h.threadClosed).not.toHaveBeenCalled()
+  // A Ticket following the second instance's own Thread hears about its close.
+  h.store.tickets.save({ ...ticketOf('site-ticket', request, 'fix-12'), follows: [{ thread: 'github-sites:12', own: true }] })
+  await observePull(context, pr, 'github-sites')
+  expect(h.threadClosed).toHaveBeenCalledWith({ source: 'github-sites', id: '12' }, 'merged', '2026-09-09T00:00:00Z')
 })

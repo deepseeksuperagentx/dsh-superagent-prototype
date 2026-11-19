@@ -107,7 +107,10 @@ export const githubKind: SourceKind<GithubConfig> = {
     values: ({ deployment, config, trigger, instance }) => {
       // The number and the PR head belong to the Ticket's own instance; a message of another Source leaves them empty.
       const number = trigger && trigger.source === (instance ?? SOURCE) ? Number(trigger.meta.number) || 0 : 0
-      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: config.repository || deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
+      // The default instance's repository is the deployment's, which setup canonicalized from that configuration (a rename or
+      // a case change included); only another instance reads from its own configuration, which the deployment does not know.
+      const repository = instance === undefined || instance === SOURCE ? deployment.repository : config.repository || deployment.repository
+      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
     },
   },

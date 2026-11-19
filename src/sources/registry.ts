@@ -162,13 +162,17 @@ export class SourceRegistry implements SourceScope {
     const context = kind?.threadContext
     if (!kind || !context) return undefined
     const { config } = this.resolve(kind, settings.sources[trigger.source], trigger.source)
+    // A second instance reads its own repository: its Thread conversation and images address the repository its own configuration names.
+    // The default instance (its ID is the kind's name) keeps the commands the caller passed, so a single-instance installation is unchanged.
+    const repository = trigger.source !== kind.kind && typeof config.repository === 'string' ? config.repository : ''
+    const scope = (commands: Commands): Commands => repository ? commands.forRepository(repository) : commands
     return {
       messageId: context.messageId(trigger),
-      read: (commands, part, cursor) => context.read(commands, trigger, part, cursor, config),
+      read: (commands, part, cursor) => context.read(scope(commands), trigger, part, cursor, config),
       images: text => context.images?.(text) ?? [],
       image: async (agent, commands, message, key, stateDir, signal) => {
         if (!context.image) throw new Error(`The ${kind.kind} Source has no images`)
-        return context.image(agent, commands, trigger, message, key, stateDir, signal)
+        return context.image(agent, scope(commands), trigger, message, key, stateDir, signal)
       },
     }
   }

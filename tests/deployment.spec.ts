@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { SetupError } from '../src/setup.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -97,5 +98,13 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+  it('names the Source instance in a setup failure\'s message when the check applied to only that instance', () => {
+    const error = new SetupError('agentCliUnset', {}, 'github-sites')
+    expect(error.message).toBe('[github-sites] The agent GitHub CLI is not set.')
+    expect(error.problem).toEqual({ place: 'github', code: 'agentCliUnset', values: {},
+      detail: '[github-sites] The agent GitHub CLI is not set.', source: 'github-sites' })
+    // A failure that is not tied to one instance keeps its message unchanged.
+    expect(new SetupError('agentCliUnset').message).toBe('The agent GitHub CLI is not set.')
   })
 })

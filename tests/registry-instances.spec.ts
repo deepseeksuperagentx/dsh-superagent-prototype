@@ -4,8 +4,9 @@ import { SettingsSchema, SourceInstanceSchema } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
 import { HealthBoard } from '../src/infra/health.ts'
+import { Commands } from '../src/infra/commands.ts'
 import type { OutboundMessage } from '../src/core/index.ts'
-import type { Commands } from '../src/infra/commands.ts'
+import { testDeployment } from './fixtures/deployment.ts'
 
 /** A kind that reads `interval` from its own instance configuration, so tests can tell one instance's config from another's. */
 const probe: SourceKind<{ interval: number }> = {
@@ -40,6 +41,16 @@ const probe: SourceKind<{ interval: number }> = {
 const lane: SourceKind<Record<string, never>> = {
   kind: 'lane', title: { zh: '车道', en: 'Lane' }, description: { zh: '', en: '' }, health: [],
   schema: z.object({}).strict(), fields: [],
+}
+/** A kind whose Thread reads report the repository the commands they received address, so instance scoping is observable. */
+const reader: SourceKind<{ repository: string }> = {
+  kind: 'reader', title: { zh: '读取器', en: 'Reader' }, description: { zh: '', en: '' }, health: [],
+  schema: z.object({ repository: z.string().default('') }).strict(), fields: [],
+  threadContext: {
+    messageId: () => 'm1',
+    read: async commands => ({ messages: [], body: { repository: commands.repository } }),
+    image: async (_agent, commands) => ({ repository: commands.repository }),
+  },
 }
 let sent: string[] = []
 const trigger = (source: string) => ({ id: `t-${source}`, source, threads: [{ source, id: '1' }], actor: { source, id: 'alice' },
@@ -131,6 +142,22 @@ describe('Source registry instances', () => {
     expect(await registry.threadContext(trigger('probe'))!.read(commands, 'thread', undefined)).toMatchObject({ body: { interval: 5 } })
     // Search covers each kind mounted under any instance, once per kind.
     expect(registry.find('anything')).toEqual({ threads: ['probe:1'], terms: ['probe-term'] })
+  })
+  it('reads a second instance\'s Thread context and images from that instance\'s repository, while the default instance keeps the caller commands', async () => {
+    const deployment = testDeployment({ repository: 'acme/lab' })
+    const commands = new Commands(() => deployment, {}, new AbortController().signal)
+    const registry = new SourceRegistry(() => SettingsSchema.parse({ sources: {
+      'reader-b': { kind: 'reader', enabled: true, config: { repository: 'acme/second' } } } }))
+    registry.register(reader)
+    registry.attach('reader-b', 'reader')
+    // A second instance reads in its own repository: both the thread and its images scope the caller's commands to it.
+    const second = registry.threadContext(trigger('reader-b'))!
+    expect((await second.read(commands, 'thread', undefined)).body).toEqual({ repository: 'acme/second' })
+    expect(await second.image({} as never, commands, { id: 'm1', text: '' }, 'm1', '/tmp', AbortSignal.timeout(1000)))
+      .toEqual({ repository: 'acme/second' })
+    // The default instance (its ID is its kind's name) keeps the commands the caller passed, unchanged.
+    const first = registry.threadContext(trigger('reader'))!
+    expect((await first.read(commands, 'thread', undefined)).body).toEqual({ repository: 'acme/lab' })
   })
   it('validates a submitted instance with its kind\'s schema and refuses unknown IDs', () => {
     const registry = new SourceRegistry(() => settings())

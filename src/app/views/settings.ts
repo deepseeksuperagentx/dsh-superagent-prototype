@@ -34,7 +34,9 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
       const kind = sources.kind(instance.id) ?? sources.kind(kindName)
       const problem = problemOf(instance.id, setup)
       const { id, title } = sourceHealth(sources, instance, health)
-      const repository = instance.config.repository
+      // The default instance's repository is the deployment's, which setup canonicalized from its configuration (a rename included);
+      // another instance displays the repository its own configuration names. While setup waits, the configuration is all there is.
+      const repository = (instance.id === instance.kind ? setup.deployment?.repository : undefined) || instance.config.repository
       // `kind.facts(deployment)` describes the shared account; each card adds the repository its own instance watches.
       const facts: Record<string, Localized | string> = { ...kind?.facts?.(setup.deployment) ?? {} }
       if (typeof repository === 'string' && repository) facts.repository = repository
