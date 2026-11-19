@@ -55,6 +55,8 @@ export interface SourceChannel<C> {
   /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
   link(address: Record<string, string>, links: ChannelLinks): ChannelLink
 }
+/** Input of a kind's `find`: the query and the instance answering it, since two instances of one kind may watch different repositories. */
+export interface FindInput<C extends Record<string, unknown> = Record<string, unknown>> { instance: string; config: C }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
   id: string; from: string; at: string; text: string
@@ -101,8 +103,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
-  /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
-  find?(query: string): { threads: string[]; terms: string[] }
+  /** Maps a search query to candidate Thread keys of one instance (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
+  find?(query: string, instance: FindInput<C>): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */

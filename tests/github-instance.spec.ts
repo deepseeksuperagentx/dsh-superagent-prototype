@@ -3,13 +3,17 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { key, type Trigger } from '../src/core/index.ts'
+import { key, type Ticket, type Trigger } from '../src/core/index.ts'
 import { Store } from '../src/app/store.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
+import { instanceRepository } from '../src/app/runtime.ts'
+import { executorTools, type ExecutorToolsHost } from '../src/app/tools/executor.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { apply, githubKind, pollRound, type GithubConfig } from '../src/sources/github.ts'
+import { pullEndNotices } from '../src/sources/github-pull.ts'
+import { pullTrigger } from '../src/sources/github-trigger.ts'
 import { setupChanged } from '../src/app/setup.ts'
 import { sourceContext, type SourceHost } from '../src/sources/host.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -53,12 +57,13 @@ function hostOf(configured: () => boolean = () => true) {
     }
     return 'stored' as const
   })
-  const deps: SourceContextDeps = { store, engine: { bindThread: vi.fn(), threadClosed: vi.fn() } as never,
+  const bindThread = vi.fn()
+  const deps: SourceContextDeps = { store, engine: { bindThread, threadClosed: vi.fn() } as never,
     outbox: { send: vi.fn() } as never, commands, sources, deployment, ready: Promise.resolve(), configured, receive }
   const host = { ...deps, sources, context: (kind: { kind: string; health: readonly string[] }) => sourceContextOf(deps, kind) }
   sources.register(githubKind)
   sources.attach('github', 'github'); sources.attach('github-sites', 'github')
-  return { host: host as unknown as SourceHost, board, sources, commands, receive }
+  return { host: host as unknown as SourceHost, board, sources, commands, receive, bindThread, deployment, store }
 }
 
 /** An Issue of `repository` as GitHub returns it, opened by alice with a mention of the agent. */
@@ -79,6 +84,24 @@ const stubReads = () => vi.spyOn(Commands.prototype, 'run').mockImplementation(a
   if (/\/issues\/12$/.test(path)) return JSON.stringify(issue(repository, 12))
   return JSON.stringify([])
 })
+
+/** A live ticket whose originating Trigger is `trigger`, as the Engine stores it after accepting one. */
+const ticketOf = (id: string, trigger: Trigger, execution: string): Ticket => ({ id, title: 'Fix the margin', decisionId: `d-${id}`,
+  mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: trigger.source, id: 'alice' }, scope: '' },
+  channels: trigger.channel ? [trigger.channel] : [], assignments: [{ id: 'a1', state: 'running', createdAt: '' }], inputs: [], undelivered: [],
+  execution: { name: execution, directory: `/w/${execution}`, assignment: '' }, origin: { triggerId: trigger.id, triggerIds: [trigger.id] },
+  createdAt: '', updatedAt: '' })
+
+/** The Executor tools' host: the real store, the registry's own instance lookup, and a stand-in engine recording each report. */
+const executorHostOf = (h: ReturnType<typeof hostOf>): ExecutorToolsHost => ({
+  engine: { report: vi.fn((id: string) => h.store.tickets.get(id)!), reply: vi.fn(), markUnrelated: vi.fn(), handback: vi.fn(), followForContext: vi.fn() },
+  store: h.store,
+  sessions: { relay: vi.fn(), notify: vi.fn() },
+  resources: {} as never,
+  github: h.host.context({ kind: 'github', health: ['github'] }),
+  sourceInstance: (id: string) => { const instance = h.sources.instance(id); return instance ? { kind: instance.kind, config: instance.config } : undefined },
+  sendReplies: vi.fn(async () => {}),
+} as unknown as ExecutorToolsHost)
 
 it('polls two instances apart: each Trigger, Thread, actor and channel names its own instance, with each instance\'s own read position and health', async () => {
   const h = hostOf()
@@ -189,4 +212,63 @@ it('mounts a second instance although its kind is already registered, claims its
   expect(sources.kind('github')).toBeUndefined()
   expect(sources.instanceKindName('github-sites')).toBeUndefined()
   expect(board.all).toEqual({})
+})
+
+it('finds a Thread by the instance whose repository a URL names, while the default instance is not crossed to the second', () => {
+  const h = hostOf()
+  // A URL resolves to the instance watching that repository: the second instance's Thread is searchable, the default one is not returned for it.
+  expect(h.sources.find(`https://github.com/${SITES}/pull/12`)).toEqual({ threads: ['github-sites:12'], terms: [] })
+  expect(h.sources.find(`https://github.com/${LAB}/issues/7`)).toEqual({ threads: ['github:7'], terms: [] })
+  // A bare number is ambiguous across repositories, so each instance answers with its own Thread.
+  expect(h.sources.find('#12')).toEqual({ threads: ['github:12', 'github-sites:12'], terms: [] })
+  // A repository no instance watches names nothing rather than the default instance's Thread.
+  expect(h.sources.find('https://github.com/acme/other/pull/3')).toEqual({ threads: [], terms: [] })
+})
+
+it('reads and claims a second instance\'s PR in its own repository, while the default instance keeps the deployment repository', async () => {
+  const h = hostOf()
+  const sitesTrigger = pullTrigger({ number: 12, title: 'Fix the margin', body: '@agent-bot fix', user: { login: 'alice', type: 'User' },
+    created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/${SITES}/pull/12` }, 'agent-bot', 'github-sites')
+  const labTrigger = pullTrigger({ number: 9, title: 'Fix the title', body: '@agent-bot fix', user: { login: 'alice', type: 'User' },
+    created_at: '2026-09-09T00:00:00Z', html_url: `https://github.com/${LAB}/pull/9` }, 'agent-bot')
+  h.store.triggers.save(sitesTrigger); h.store.triggers.save(labTrigger)
+  h.store.tickets.save(ticketOf('site-ticket', sitesTrigger, 'fix-12'))
+  h.store.tickets.save(ticketOf('lab-ticket', labTrigger, 'fix-9'))
+  const pull = (repository: string, number: number) => JSON.stringify({ state: 'open', html_url: `https://github.com/${repository}/pull/${number}`,
+    user: { login: 'agent-bot' }, head: { sha: 'abc', ref: `agent/fix-${number}`, repo: { full_name: repository } } })
+  const read: string[] = []
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+    const path = args[1] ?? ''
+    read.push(path)
+    return /\/pulls\/12$/.test(path) ? pull(SITES, 12) : pull(LAB, 9)
+  })
+  const host = executorHostOf(h)
+  const report = async (ticketId: string, number: number) => {
+    const ticket = h.store.tickets.get(ticketId)!
+    const tool = executorTools(host, ticket).find(item => item.name === 'orchestrator_report')!
+    return tool.execute({ state: 'progress', summary: 'PR opened', pr_number: number }, new AbortController().signal)
+  }
+  // The second instance's PR is read from its own repository and bound to its own Thread.
+  await report('site-ticket', 12)
+  expect(read).toContain(`repos/${SITES}/pulls/12`)
+  expect(read).not.toContain(`repos/${LAB}/pulls/12`)
+  expect(h.bindThread).toHaveBeenCalledWith('site-ticket', { source: 'github-sites', id: '12' }, true)
+  // A Ticket of the default instance keeps reading and binding the deployment repository exactly as before.
+  await report('lab-ticket', 9)
+  expect(read).toContain(`repos/${LAB}/pulls/9`)
+  expect(h.bindThread).toHaveBeenCalledWith('lab-ticket', { source: 'github', id: '9' }, true)
+})
+
+it('links a PR end notice to its own instance\'s repository, the default instance keeping the deployment repository', () => {
+  const h = hostOf()
+  const ended = (thread: string): Ticket => ({ id: 'ended', title: 'Fix the margin', decisionId: 'd-ended',
+    mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: 'ou_alice' }, scope: '' },
+    channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } }],
+    assignments: [], inputs: [], undelivered: [], follows: [{ thread, own: true, closed: { at: '2026-09-09T00:00:00Z', outcome: 'merged' } }],
+    ended: { at: '2026-09-09T00:00:00Z', by: 'executor', outcome: 'merged' }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '', updatedAt: '' })
+  const linkOf = (thread: string) => pullEndNotices(ended(thread), '修一下', source => instanceRepository(h.sources, h.deployment, source))[0]!.text
+  expect(linkOf('github-sites:12')).toContain(`https://github.com/${SITES}/pull/12`)
+  // The default instance and a Source of another kind keep the deployment repository.
+  expect(linkOf('github:12')).toContain(`https://github.com/${LAB}/pull/12`)
+  expect(instanceRepository(h.sources, h.deployment, 'feishu')).toBe(LAB)
 })

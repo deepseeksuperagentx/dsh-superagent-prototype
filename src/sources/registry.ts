@@ -145,9 +145,15 @@ export class SourceRegistry implements SourceScope {
     return link ?? { url: '', label: { zh: channel.source, en: channel.source } }
   }
   find(query: string): { threads: string[]; terms: string[] } {
-    // Each kind answers once; two instances of one kind search the same way.
-    const kinds = new Set(this.instanceIds().flatMap(instance => { const kind = this.kind(instance); return kind ? [kind] : [] }))
-    const found = [...kinds].flatMap(kind => kind.find ? [kind.find(query)] : [])
+    // Every instance answers for itself, since two instances of one kind may watch different repositories: a URL names one
+    // instance's Thread, while a bare number matches each instance's own. Results are deduplicated across kinds and instances.
+    const settings = this.settings()
+    const found = this.instanceIds().flatMap(instance => {
+      const kind = this.kind(instance)
+      if (!kind?.find) return []
+      const { config } = this.resolve(kind, settings.sources[instance], instance)
+      return [kind.find(query, { instance, config })]
+    })
     return { threads: [...new Set(found.flatMap(item => item.threads))], terms: [...new Set(found.flatMap(item => item.terms))] }
   }
   repliesTo(trigger: Trigger): string | undefined { return this.kind(trigger.source)?.repliesTo?.(trigger) }

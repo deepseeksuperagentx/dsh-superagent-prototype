@@ -34,6 +34,9 @@ export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_
 export const ticketBranch = (ticket: Pick<Ticket, 'execution'>, ref: string): boolean =>
   !!ticket.execution?.name && ref.split('/').at(-1) === ticket.execution.name
 const AUTO_MERGE_ON: ThreadFact = { label: { zh: '自动合并', en: 'Auto-merge' }, value: { zh: '已开启', en: 'on' } }
+/** Whether a ticket follows the PR `<source>:<number>`; `open` only when that follow is still open. */
+const followsPull = (ticket: Pick<Ticket, 'follows'>, source: string, number: number, open = true): boolean =>
+  (ticket.follows ?? []).some(item => item.thread === `${source}:${number}` && (!open || !item.closed))
 
 /**
  * Validates and binds an open PR to a ticket when the PR is either the ticket's origin PR or an agent-authored PR on the ticket's branch, enforcing that one PR binds to at most one open ticket.
@@ -50,9 +53,9 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull, source
     const { login } = ctx.deployment.github
     return `PR does not belong to this ticket: use the source PR or a PR by ${login} from a branch whose last path segment is DSH_SUPERAGENT_NAME; omit pr_number when no PR exists`
   }
-  const owner = ctx.tickets.open().find(item => pullsOf(item, true).includes(pr.number))
+  const owner = ctx.tickets.open().find(item => followsPull(item, source, pr.number))
   if (owner && owner.id !== ticketId) return 'PR already belongs to another active ticket'
-  const follow = ticket.follows?.find(item => pullNumber(item.thread) === pr.number)
+  const follow = ticket.follows?.find(item => item.thread === `${source}:${pr.number}`)
   if (pr.state === 'open' && (!follow || follow.closed || (opened && !follow.own))) bind(ctx, ticketId, pr, opened, source)
   return undefined
 }
@@ -90,19 +93,22 @@ function closePull(ctx: SourceContext, pr: Pull, source = SOURCE): void {
   const at = pr.merged_at ?? pr.closed_at ?? new Date().toISOString()
   ctx.tickets.threadClosed({ source, id: String(pr.number) }, pr.merged ? 'merged' : 'closed', at)
 }
+/** A PR link's repository: one fixed repository, or one per GitHub instance (its Thread key names the instance). */
+export type PullRepository = string | ((source: string) => string)
 /**
  * Builds idempotent outbound notices for IM conversations when a ticket ends with its PR (selecting the last-closed PR it
  * opened, else the last one it followed). The notice language follows the ticket's source request: Chinese when it contains
  * Han characters and no kana, otherwise English.
+ * @param repository - the PR's repository, or a resolver per GitHub instance, so a second instance's PR links to its own repository.
  */
-export function pullEndNotices(ticket: Ticket, request: string, repository: string): OutboundMessage[] {
+export function pullEndNotices(ticket: Ticket, request: string, repository: PullRepository): OutboundMessage[] {
   const outcome = ticket.ended?.outcome
   const follows = (ticket.follows ?? []).filter(item => item.closed && pullNumber(item.thread) !== undefined)
   const latest = (items: Follow[]) => items.sort((a, b) => b.closed!.at.localeCompare(a.closed!.at))[0]
   const follow = latest(follows.filter(item => item.own)) ?? latest(follows)
   if ((outcome !== 'merged' && outcome !== 'closed') || !follow) return []
   const number = pullNumber(follow.thread)!
-  const url = githubPage(repository, number, true)
+  const url = githubPage(typeof repository === 'function' ? repository(follow.thread.slice(0, follow.thread.lastIndexOf(':'))) : repository, number, true)
   const chinese = /\p{Script=Han}/u.test(request) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(request)
   const text = chinese
     ? outcome === 'merged' ? `[PR #${number}](${url}) 已合并。` : `[PR #${number}](${url}) 已关闭，未合并。`

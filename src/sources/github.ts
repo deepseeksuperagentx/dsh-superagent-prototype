@@ -63,10 +63,17 @@ export const githubKind: SourceKind<GithubConfig> = {
   health: ['github'],
   channel: { send: sendGithub, link: githubLink },
   threadContext: githubThreadContext,
-  // `#12`, `12`, or the page of an Issue or PR, of any repository, names Thread 12.
-  find: query => {
-    const number = (/^#?(\d+)$/.exec(query.trim()) ?? /github\.com\/[^/]+\/[^/]+\/(?:pull|issues)\/(\d+)/.exec(query))?.[1]
-    return { threads: number ? [`${SOURCE}:${number}`] : [], terms: [] }
+  // `#12`, `12`, or the page of an Issue or PR, of any repository, names a Thread: a bare number names every instance that
+  // holds it, while a URL names only the instance watching that repository, so two instances never resolve each other's PRs.
+  find: (query, { instance, config }) => {
+    const bare = /^#?(\d+)$/.exec(query.trim())?.[1]
+    if (bare) return { threads: [`${instance}:${bare}`], terms: [] }
+    const page = /github\.com\/([^/\s]+)\/([^/\s]+)\/(?:pull|issues)\/(\d+)/.exec(query)
+    if (!page) return { threads: [], terms: [] }
+    const repository = typeof config.repository === 'string' ? config.repository : ''
+    // An instance whose repository setup has not resolved yet keeps the URL answer it gave before instances existed.
+    if (!sameName(repository, `${page[1]}/${page[2]}`) && !(repository === '' && instance === SOURCE)) return { threads: [], terms: [] }
+    return { threads: [`${instance}:${page[3]}`], terms: [] }
   },
   policy: {
     schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9-]+$/) }).strict()).default([]),

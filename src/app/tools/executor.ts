@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
+import { SOURCE } from '../../sources/github-trigger.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
@@ -12,12 +13,31 @@ import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
-  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
-  /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
+  /** GitHub Source context whose pull-request rules govern claiming a reported PR; the default instance's. */
   readonly github: SourceContext
+  /** An installed Source instance's kind and configuration, so a Ticket's PR tools resolve its own instance's repository. */
+  sourceInstance(id: string): { kind: string; config: Record<string, unknown> } | undefined
   sendReplies(): Promise<void>
+}
+
+/**
+ * The GitHub instance a Ticket's pull-request tools read and claim in: the instance its originating Trigger came from when
+ * that is a GitHub instance, and the default instance otherwise. The default instance keeps the context as handed in (the
+ * deployment's repository and commands), so a single-instance installation behaves exactly as before; another instance reads
+ * and claims in its own repository.
+ */
+function githubInstance(host: ExecutorToolsHost, ticket: Ticket): { source: string; context: SourceContext } {
+  const base = host.github
+  const source = host.store.triggers.get(ticket.origin.triggerId)?.source
+  const instance = source && source !== SOURCE ? host.sourceInstance(source) : undefined
+  if (!source || !instance || instance.kind !== SOURCE) return { source: SOURCE, context: base }
+  const configured = typeof instance.config.repository === 'string' ? instance.config.repository : ''
+  const repository = configured || base.deployment.repository
+  if (repository === base.deployment.repository) return { source, context: base }
+  return { source, context: { ...base, deployment: { ...base.deployment, repository }, commands: base.commands.forRepository(repository) } }
 }
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
@@ -85,10 +105,12 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
-        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
+        // The Ticket's own GitHub instance: its PR is read from that instance's repository and bound to its Thread.
+        const github = args.pr_number != null ? githubInstance(host, current) : undefined
+        const pull = github && args.pr_number != null ? await readPull(github.context, args.pr_number, signal) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
-          const refused = pull && claimPull(host.github, ticketId, pull)
+          const refused = pull && github && claimPull(github.context, ticketId, pull, github.source)
           if (refused) throw new Error(refused)
           const report = { state: args.state, summary: args.summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),

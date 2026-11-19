@@ -55,6 +55,15 @@ declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceH
 const now = (): string => new Date().toISOString()
 
 /**
+ * The repository a GitHub Source instance's links and reads address: its own configured repository, while the default
+ * instance (and a Source of another kind) keeps the deployment repository. A second instance's PR links to its own repository.
+ */
+export function instanceRepository(sources: Pick<SourceRegistry, 'instance'>, deployment: Deployment, source: string): string {
+  const instance = sources.instance<{ repository?: string }>(source)
+  return instance?.kind === 'github' && instance.config.repository ? instance.config.repository : deployment.repository
+}
+
+/**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
  * Exposes the `SourceHost` service on the Cordis context for source plugins and coordinates startup, setup checks, HTTP route registration, and graceful shutdown.
  * Locks the state directory before opening SQLite so concurrent processes cannot corrupt or double-migrate state.
@@ -180,7 +189,8 @@ export class Runtime extends Service implements SourceHost {
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
-            for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
+            // Each PR links to its own instance's repository: a second instance's PR must not link to the default one.
+            for (const message of pullEndNotices(ended, request, source => instanceRepository(sources, setup.deployment, source))) outbox.send(message)
           }
           // The worker's Session of a ticket that ended for good is released once it goes idle.
           if (event.type === 'ticket.ended') reaper.ticketEnded(event.data.ticketId)
@@ -195,6 +205,7 @@ export class Runtime extends Service implements SourceHost {
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        sourceInstance: id => { const instance = sources.instance(id); return instance ? { kind: instance.kind, config: instance.config } : undefined },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()
