@@ -45,7 +45,13 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     guard: (current, candidate, origin) => { if (origin !== 'panel' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
   },
   source: {
-    parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
+    // A save of an added instance records the kind it is attached as, so setup reads (which work from stored settings) see
+    // it as an instance of that kind rather than as a kind of its own. The default instance keeps no `kind`, as before.
+    parse: (value, sources, id) => {
+      const parsed = sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value))
+      const kind = sources.instanceKindName(id)
+      return kind === undefined || kind === id ? parsed : { ...parsed, kind }
+    },
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
     // Only the management panel may switch source accounts.
     guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
