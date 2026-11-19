@@ -47,10 +47,19 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
-/** Source configuration keys that affect deployment setup and trigger a restart when changed. */
+/**
+ * Source configuration keys that affect deployment setup and trigger a restart when changed, by **Source kind** rather than
+ * instance: every mounted instance of a kind reads the same field names from its own configuration
+ * (`settings.sources[instanceId].config`), so the kind that runs an instance also decides which of its fields setup reads.
+ */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
 export interface Deployment extends Machine {
+  /**
+   * The default GitHub instance's repository (`github`), resolved from that instance's configuration, kept for the modes that
+   * predate instances. Another instance's repository is its own configuration's `repository`, which its polling, channels and
+   * environment use.
+   */
   repository: string
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot

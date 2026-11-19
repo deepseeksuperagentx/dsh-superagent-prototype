@@ -21,7 +21,9 @@ export const SETUP_PROBLEMS = {
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
-export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }
+export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string
+  /** The Source instance at fault when a kind has several (such as one of two GitHub instances); absent for a kind-wide failure. */
+  source?: string }
 
 /**
  * Thrown by deployment and account verification checks when a required CLI, account, or repository check fails.
@@ -29,11 +31,14 @@ export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Reco
  */
 export class SetupError extends Error {
   readonly place: SetupPlace
-  constructor(readonly code: SetupCode, readonly values: Record<string, string> = {}) {
+  /** @param source - the Source instance at fault, when the check names only that instance (another instance of the same kind may be fine). */
+  constructor(readonly code: SetupCode, readonly values: Record<string, string> = {}, readonly source?: string) {
     const [place, text] = SETUP_PROBLEMS[code]
     const sentence = fill(text, values)
     super(values.output ? `${sentence}\n${values.output}` : sentence)
     this.place = place
   }
-  get problem(): SetupProblem { return { place: this.place, code: this.code, values: this.values, detail: this.message } }
+  get problem(): SetupProblem {
+    return { place: this.place, code: this.code, values: this.values, detail: this.message, ...this.source ? { source: this.source } : {} }
+  }
 }

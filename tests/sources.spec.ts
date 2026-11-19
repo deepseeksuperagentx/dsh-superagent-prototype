@@ -489,7 +489,7 @@ describe('github source', () => {
     await pollGithubThreads(h)
     expect(h.receive).toHaveBeenCalledTimes(1)
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ actor: { id: 'b' }, text: 'new', threads: [{ source: 'github', id: '7' }] })
-    expect(h.store.get('github-cursor:7')).toBeDefined()
+    expect(h.store.get('github-cursor:github:7')).toBeDefined()
     // A Thread whose title the Source had not read yet is named by its number and title, with its number as a fact.
     expect(h.store.threads.get('github:7')!.meta).toMatchObject({ title: 'Fix the margin', label: '#7 Fix the margin', facts: { number: { value: '#7' } } })
     h.store.close()
@@ -574,7 +574,7 @@ describe('github source', () => {
   })
   it('reads each notified Issue alone and reads a failed one again next round, from where it was', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:12', ref: { source: 'github', id: '12' }, createdAt: '', subscriptions: [], correlated: [],
       pending: [], meta: {} })
     const mention = (id: number, number: number, at: string): GithubComment => ({ id, body: '@agent-bot take this',
@@ -588,41 +588,41 @@ describe('github source', () => {
     await expect(pollRound(h)).rejects.toThrow('#12: Error: gh: Bad Gateway (HTTP 502)')
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13])
     // The cursor moved together with the Issue it does not cover yet.
-    expect(Date.parse(h.store.get<string>('github-since')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
-    expect(h.store.get('github-retry')).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
+    expect(Date.parse(h.store.get<string>('github-since:github')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
+    expect(h.store.get('github-retry:github')).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
     expect(h.store.threads.get('github:12')!.meta.pollError).toContain('Bad Gateway')
     Object.assign(routes, { notifications: [], 'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }),
       'issues/12/comments': [mention(2, 12, '2026-09-08T02:00:00Z')] })
     await pollRound(h)
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13, 12])
-    expect(h.store.get('github-retry')).toEqual({})
+    expect(h.store.get('github-retry:github')).toEqual({})
     expect(h.store.threads.get('github:12')!.meta).not.toHaveProperty('pollError')
     h.store.close()
   })
   it('drops an Issue GitHub reports as deleted after recording it, and reads one it answers 404 for again', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     h.store.tickets.save(openTicket('t14'))
     h.store.threads.save({ key: 'github:14', ref: { source: 'github', id: '14' }, createdAt: '', lastAt: new Date().toISOString(),
       subscriptions: ['t14'], correlated: [], pending: [], meta: { number: 14, isPr: false, title: 'Gone' } })
     const deleted = refused(410, 'This issue was deleted')
     github(h, { notifications: [notification(14), notification(15)], 'issues/14': deleted, 'issues/15': deleted })
     await pollRound(h)
-    expect(h.store.get('github-retry')).toEqual({})
+    expect(h.store.get('github-retry:github')).toEqual({})
     // Dropping a read moves no read position.
-    expect(h.store.get('github-cursor:14')).toBeUndefined()
+    expect(h.store.get('github-cursor:github:14')).toBeUndefined()
     expect(h.store.threads.get('github:14')!.meta.pollError).toContain('deleted')
     // Without a Thread to keep it, the Source's health names it.
     expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
     // GitHub also answers 404 for a private repository the agent lost access to: that is a failure read again.
     github(h, { notifications: [notification(16)] })
     await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
-    expect(h.store.get('github-retry')).toEqual({ 16: expect.objectContaining({ pr: false }) })
+    expect(h.store.get('github-retry:github')).toEqual({ 16: expect.objectContaining({ pr: false }) })
     h.store.close()
   })
   it('skips and counts a notification or comment it cannot read, and names the count in the health', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     const comment = { id: 3, body: '@agent-bot please fix', user: { login: 'alice', type: 'User' },
       html_url: 'https://github.com/acme/widgets/issues/12#issuecomment-3', created_at: '2026-09-09T00:00:00Z', updated_at: '2026-09-09T00:00:00Z' }
     github(h, { notifications: [notification(12), { id: 'n-odd', subject: {} }], 'issues/12': issue(12,
@@ -635,7 +635,7 @@ describe('github source', () => {
   })
   it('reads every page of the notifications when GitHub says there are more, and waits as long as GitHub asks', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     const calls: string[][] = []
     vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
       calls.push(args)
@@ -657,24 +657,24 @@ describe('github source', () => {
   })
   it('drops a notified Issue whose reads fail for a day, so the Source leaves the error, and keeps its read position', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:16', ref: { source: 'github', id: '16' }, createdAt: '', subscriptions: [], correlated: [], pending: [],
       meta: {} })
-    h.store.set('github-cursor:16', '2026-09-01T00:00:00.000Z')
+    h.store.set('github-cursor:github:16', '2026-09-01T00:00:00.000Z')
     github(h, { notifications: [notification(16)] })
     await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
-    const first = h.store.get<Record<string, { failedAt: string; attempts: number }>>('github-retry')![16]!
+    const first = h.store.get<Record<string, { failedAt: string; attempts: number }>>('github-retry:github')![16]!
     expect(first).toMatchObject({ attempts: 1, failedAt: expect.any(String) })
     // However many reads failed, a day of failures has not passed: the read is retried, and the round still fails.
-    h.store.set('github-retry', { 16: { ...first, attempts: 99 } })
+    h.store.set('github-retry:github', { 16: { ...first, attempts: 99 } })
     github(h, { notifications: [] })
     await expect(pollRound(h)).rejects.toThrow('#16')
     // A day after the first failed read, it is dropped: its Thread keeps the error, the health names it, and the round does not
     // fail. Its read position stays, so a later read takes in what the failed reads missed.
-    h.store.set('github-retry', { 16: { ...first, failedAt: new Date(Date.now() - 25 * 3600_000).toISOString() } })
+    h.store.set('github-retry:github', { 16: { ...first, failedAt: new Date(Date.now() - 25 * 3600_000).toISOString() } })
     await pollRound(h)
-    expect(h.store.get('github-retry')).toEqual({})
-    expect(h.store.get('github-cursor:16')).toBe('2026-09-01T00:00:00.000Z')
+    expect(h.store.get('github-retry:github')).toEqual({})
+    expect(h.store.get('github-cursor:github:16')).toBe('2026-09-01T00:00:00.000Z')
     expect(h.store.threads.get('github:16')?.meta.pollError).toContain('Not Found')
     expect(h.health.github).toMatchObject({ state: 'ready',
       detail: '0 notifications; next poll ≥ 60s; dropped after their reads kept failing: #16' })
@@ -682,7 +682,7 @@ describe('github source', () => {
   })
   it('polls the PRs of open tickets and subscribed Threads although the notifications fail, and then fails the round', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:7', ref: { source: 'github', id: '7' }, createdAt: '2026-09-01T00:00:00Z',
       lastAt: new Date().toISOString(), subscriptions: ['t'], correlated: [], pending: [], meta: { number: 7, isPr: false,
       title: 'Login fails' } })
@@ -690,12 +690,12 @@ describe('github source', () => {
       user: { login: 'b', type: 'User' }, created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z' }] })
     await expect(pollRound(h)).rejects.toThrow('HTTP 503')
     expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'still broken' }))
-    expect(h.store.get('github-since')).toBe('2026-09-08T00:00:00.000Z')
+    expect(h.store.get('github-since:github')).toBe('2026-09-08T00:00:00.000Z')
     h.store.close()
   })
   it('takes in the description of a notified PR someone opened since the cursor, as a new PR\'s stream does', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     const pr = { ...openPull(9), body: '@agent-bot please review', created_at: '2026-09-09T00:00:00Z' }
     github(h, { notifications: [notification(9, 'pulls')], 'pulls/9': pr })
     await pollRound(h)
@@ -705,10 +705,10 @@ describe('github source', () => {
       meta: expect.objectContaining({ number: 9, isPr: true, prAuthor: 'carol' }) })])
     // The agent's own PR, and one opened before the cursor, bring no description.
     h.receive.mockClear()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     github(h, { notifications: [notification(9, 'pulls')], 'pulls/9': { ...pr, user: { login: 'agent-bot' } } })
     await pollRound(h)
-    h.store.set('github-since', '2026-09-10T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-10T00:00:00.000Z')
     github(h, { notifications: [{ ...notification(9, 'pulls'), updated_at: '2026-09-11T00:00:00Z' }], 'pulls/9': pr })
     await pollRound(h)
     expect(h.receive.mock.calls.filter(([trigger]) => trigger.meta.kind === 'pull')).toEqual([])
@@ -727,7 +727,7 @@ describe('github source', () => {
   })
   it('drops an Issue or a ticket\'s PR that GitHub answers 410 for, and keeps a failed PR read on its Thread', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     h.store.tickets.save({ ...openTicket('ticket'), follows: [{ thread: 'github:7', own: true }, { thread: 'github:8', own: true }] })
     subscribed(h, { source: 'github', id: '5' }, { number: 5, isPr: false, title: 'Gone' })
     h.store.threads.save({ ...h.store.threads.get('github:5')!, lastAt: new Date().toISOString() })
@@ -818,7 +818,7 @@ describe('github source', () => {
   /** GitHub as `pollRound` reads it after `since`: one notification per Issue, the Issues, and their conversation comments by number. */
   function notify(h: ReturnType<typeof host>, issues: GithubIssue[], comments: Record<number, GithubComment[]> = {},
     since = '2026-09-08T00:00:00.000Z') {
-    h.store.set('github-since', since)
+    h.store.set('github-since:github', since)
     // A notification is as new as the latest change it reports: the Issue or its newest comment.
     const updated = (item: GithubIssue) => [item.updated_at ?? item.created_at,
       ...(comments[item.number] ?? []).map(comment => comment.updated_at ?? '')].sort().at(-1)!
@@ -884,7 +884,7 @@ describe('github source', () => {
     expect(plain).not.toHaveProperty('addressed')
     expect(bot).toMatchObject({ id: key('github-issue', '15'), human: false })
     // The Issue's own read position moves past what this round read.
-    expect(Date.parse(h.store.get<string>('github-cursor:12')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
+    expect(Date.parse(h.store.get<string>('github-cursor:github:12')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
     h.store.close()
   })
   it('keeps an Issue body the unclaimed-Issue Source stored before as the one Trigger of that body', async () => {
@@ -912,7 +912,7 @@ describe('github source', () => {
   })
   it('reads a PR that a notification names by its Issue address as the PR', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set('github-since:github', '2026-09-08T00:00:00.000Z')
     const review = { id: 4, state: 'APPROVED', commit_id: 'abc', user: { login: 'carol', type: 'User' },
       submitted_at: '2026-09-09T00:00:00Z' }
     const reads = github(h, { notifications: [notification(9)], 'issues/9': { ...issue(9), pull_request: { url: 'x' } },
@@ -936,8 +936,8 @@ describe('github source', () => {
     }
     await pollRound(h)
     expect(h.receive).not.toHaveBeenCalled()
-    expect(h.store.get('github-cursor:12')).toBeUndefined()
-    expect(h.store.get('github-since')).toBe('2026-09-08T00:00:00.000Z')
+    expect(h.store.get('github-cursor:github:12')).toBeUndefined()
+    expect(h.store.get('github-since:github')).toBe('2026-09-08T00:00:00.000Z')
     h.store.close()
   })
   it('lets a ticket follow its source PR or the agent\'s PR from its branch, and refuses others', async () => {
@@ -1007,9 +1007,9 @@ describe('source context', () => {
     expect(h.config('feishu')).toMatchObject({ directMessages: true })
     h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, feishu: { enabled: false, config: {} } } })
     expect(h.config('feishu')).toBeUndefined()
-    h.state.set('github-retry', { 1: {} })
-    h.state.set('github-retry', undefined)
-    expect(h.store.keys('github-retry')).toEqual([])
+    h.state.set('github-retry:github', { 1: {} })
+    h.state.set('github-retry:github', undefined)
+    expect(h.store.keys('github-retry:github')).toEqual([])
     h.store.tickets.save({ ...openTicket('t1'), execution: execution('one') })
     h.tickets.bindThread('t1', { source: 'github', id: '4' }, true)
     // The ticket follows the Thread; its other fields stay as they were.
@@ -1217,8 +1217,8 @@ describe('observing the GitHub repository', () => {
     async () => {
     const h = host()
     observe(h, { observeIssues: true, observePulls: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0), pulls: at(0) } })
+    h.store.set('github-since:github', at(-24))
+    h.store.set('github-stream:github:issues', { since: at(0), started: { issues: at(0), pulls: at(0) } })
     const calls = repository(h, { issues: [issue(3, { created_at: at(-24), updated_at: at(1) }),
       issue(4, { created_at: at(2), updated_at: at(2) }),
       { ...issue(5, { created_at: at(3), updated_at: at(3) }), pull_request: { url: 'x' } },
@@ -1228,12 +1228,12 @@ describe('observing the GitHub repository', () => {
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.id]))
       .toEqual([[4, 'issue', issueTrigger(issue(4), 'agent-bot').id], [5, 'pull', issueTrigger(issue(5), 'agent-bot').id]])
     const started = { issues: at(0), pulls: at(0) }
-    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started })
+    expect(h.store.get('github-stream:github:issues')).toEqual({ since: cursorAt(at(4)), started })
     const list = () => calls.filter(args => args[1]!.startsWith('repos/acme/widgets/issues?'))
     expect(list()[0]![1]).toContain(`since=${encodeURIComponent(at(0))}`)
     // The next round repeats the request at the newest Issue, whose ETag the round after sends, which GitHub answers 304 for.
     await pollRound(h)
-    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started, etag: '"same"' })
+    expect(h.store.get('github-stream:github:issues')).toEqual({ since: cursorAt(at(4)), started, etag: '"same"' })
     h.receive.mockClear()
     await pollRound(h)
     expect(list().at(-1)).toEqual(expect.arrayContaining(['-H', 'If-None-Match: "same"']))
@@ -1241,15 +1241,15 @@ describe('observing the GitHub repository', () => {
     // Switched off, the stream forgets where it was, so it starts afresh once switched on again.
     observe(h, {})
     await pollRound(h)
-    expect(h.store.get('github-stream:issues')).toBeUndefined()
+    expect(h.store.get('github-stream:github:issues')).toBeUndefined()
     h.store.close()
   })
   it('takes in the repository\'s conversation and review comments, on the Issue or PR each is on', async () => {
     const h = host()
     observe(h, { observeComments: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     for (const stream of ['comments', 'review-comments']) {
-      h.store.set(`github-stream:${stream}`, { since: at(0), started: { comments: at(0) } })
+      h.store.set(`github-stream:github:${stream}`, { since: at(0), started: { comments: at(0) } })
     }
     const comment = (id: number, fields: Record<string, unknown>) => ({ id, body: `comment ${id}`, user: { login: 'carol', type: 'User' },
       created_at: at(1), updated_at: at(1), ...fields })
@@ -1269,10 +1269,10 @@ describe('observing the GitHub repository', () => {
   it('fails the round for a stream whose read fails, keeps its cursor, and still reads the other streams', async () => {
     const h = host()
     observe(h, { observeIssues: true, observeComments: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     const kind = (stream: string) => stream === 'issues' ? 'issues' : 'comments'
     for (const stream of ['issues', 'comments', 'review-comments']) {
-      h.store.set(`github-stream:${stream}`, { since: at(0), started: { [kind(stream)]: at(0) } })
+      h.store.set(`github-stream:github:${stream}`, { since: at(0), started: { [kind(stream)]: at(0) } })
     }
     const comment = { id: 1, body: 'looks off', user: { login: 'carol', type: 'User' }, created_at: at(1), updated_at: at(1),
       issue_url: 'https://api.github.com/repos/acme/widgets/issues/7', html_url: 'https://github.com/acme/widgets/issues/7#issuecomment-1' }
@@ -1284,17 +1284,17 @@ describe('observing the GitHub repository', () => {
       return answer(program, args)
     })
     await expect(pollRound(h)).rejects.toThrow(/issues: .*502/)
-    expect(h.store.get('github-stream:issues')).toEqual({ since: at(0), started: { issues: at(0) } })
+    expect(h.store.get('github-stream:github:issues')).toEqual({ since: at(0), started: { issues: at(0) } })
     expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'looks off' }))
-    expect(h.store.get('github-stream:comments')).toEqual({ since: cursorAt(at(1)), started: { comments: at(0) } })
+    expect(h.store.get('github-stream:github:comments')).toEqual({ since: cursorAt(at(1)), started: { comments: at(0) } })
     h.store.close()
   })
   it('reads a stream whose cursor is older than the polling horizon from the horizon, without the ETag of the older request', async () => {
     const h = host()
     observe(h, { observeIssues: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     const old = new Date(Date.now() - 20 * 86_400_000).toISOString()
-    h.store.set('github-stream:issues', { since: old, started: { issues: old }, etag: '"same"' })
+    h.store.set('github-stream:github:issues', { since: old, started: { issues: old }, etag: '"same"' })
     const calls = repository(h, {})
     await pollRound(h)
     const list = calls.find(args => args[1]!.startsWith('repos/acme/widgets/issues?'))!
@@ -1308,43 +1308,43 @@ describe('observing the GitHub repository', () => {
   it('starts the default branch\'s CI afresh when the default branch is renamed, without a Trigger', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-branch-ci', { branch: 'master', failures: [], revision: 2 })
+    h.store.set('github-since:github', at(-24))
+    h.store.set('github-branch-ci:github', { branch: 'master', failures: [], revision: 2 })
     const answers = { branch: { sha: 'ddd4444', checks: [{ name: 'lint', status: 'completed', conclusion: 'failure' }] } }
     repository(h, answers)
     await pollRound(h)
     expect(h.receive).not.toHaveBeenCalled()
-    expect(h.store.get('github-branch-ci')).toEqual({ branch: 'main', failures: ['lint'], revision: 2 })
+    expect(h.store.get('github-branch-ci:github')).toEqual({ branch: 'main', failures: ['lint'], revision: 2 })
     h.store.close()
   })
   it('takes in new PRs only from when their switch turned on, apart from when new Issues were', async () => {
     const h = host()
     observe(h, { observeIssues: true, observePulls: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     // The stream took in Issues from hour 0; PRs were switched on only now.
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set('github-stream:github:issues', { since: at(0), started: { issues: at(0) } })
     repository(h, { issues: [{ ...issue(5, { created_at: at(2), updated_at: at(2) }), pull_request: { url: 'x' } },
       issue(6, { created_at: at(3), updated_at: at(3) })] })
     await pollRound(h)
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind])).toEqual([[6, 'issue']])
-    expect(h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started).toEqual({ issues: at(0), pulls: expect.any(String) })
+    expect(h.store.get<{ started: Record<string, string> }>('github-stream:github:issues')!.started).toEqual({ issues: at(0), pulls: expect.any(String) })
     // Switched off, a kind forgets its start.
     observe(h, { observePulls: true })
     await pollRound(h)
-    expect(Object.keys(h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started)).toEqual(['pulls'])
+    expect(Object.keys(h.store.get<{ started: Record<string, string> }>('github-stream:github:issues')!.started)).toEqual(['pulls'])
     h.store.close()
   })
   it('keeps a stream\'s cursor five seconds before its newest item, and a stale cursor on the hour, so the ETag is sent again', async () => {
     const h = host()
     observe(h, { observeIssues: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set('github-since:github', at(-24))
+    h.store.set('github-stream:github:issues', { since: at(0), started: { issues: at(0) } })
     repository(h, { issues: [issue(6, { created_at: at(3), updated_at: at(3) })] })
     await pollRound(h)
-    expect(h.store.get<{ since: string }>('github-stream:issues')!.since).toBe(new Date(Date.parse(at(3)) - 5000).toISOString())
+    expect(h.store.get<{ since: string }>('github-stream:github:issues')!.since).toBe(new Date(Date.parse(at(3)) - 5000).toISOString())
     // A cursor behind the horizon reads from the horizon on the hour, the same in the next round, which sends the ETag.
     const old = new Date(Date.now() - 20 * 86_400_000).toISOString()
-    h.store.set('github-stream:issues', { since: old, started: { issues: old } })
+    h.store.set('github-stream:github:issues', { since: old, started: { issues: old } })
     const calls = repository(h, {})
     await pollRound(h); await pollRound(h)
     const lists = calls.filter(args => args[1]!.startsWith('repos/acme/widgets/issues?'))
@@ -1357,7 +1357,7 @@ describe('observing the GitHub repository', () => {
   it('gives each change of the default branch\'s CI its own id, also when one commit fails, passes and fails again', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     const check = (name: string, conclusion: string) => ({ name, status: 'completed', conclusion })
     const answers = { branch: { sha: 'eee5555', checks: [check('lint', 'success')] } }
     repository(h, answers)
@@ -1382,7 +1382,7 @@ describe('observing the GitHub repository', () => {
   it('tells of the default branch\'s CI when its failed checks change and once it passes again, after a first look', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
+    h.store.set('github-since:github', at(-24))
     const check = (name: string, conclusion: string | null) => ({ name, status: conclusion ? 'completed' : 'in_progress', conclusion })
     const answers = { branch: { sha: 'aaa1111', checks: [check('lint', 'success'), check('e2e', 'success')] } }
     repository(h, answers)

@@ -64,4 +64,10 @@ export interface SourceContext {
   /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
   report(entry: string, health: Health): void
 }
-export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }): SourceContext => host.context(kind)
+/**
+ * Builds the context of one Source instance. The default instance (its ID is the kind's name) reports on the kind's declared
+ * health entries; another instance reports on the entry named after its own ID, which `SourceRegistry.attach` claims.
+ * @param instanceId - the instance whose polling loop this context serves; defaults to the kind's default instance.
+ */
+export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }, instanceId = kind.kind): SourceContext =>
+  instanceId === kind.kind ? host.context(kind) : host.context({ kind: kind.kind, health: [instanceId] })

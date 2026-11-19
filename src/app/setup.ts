@@ -13,8 +13,20 @@ export interface SetupHost {
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
+type StoredSource = Settings['sources'][string]
+/** The Source kind an instance is configured as: the stored `kind`, or the instance ID itself for a kind's default instance. */
+const kindOf = (id: string, source: StoredSource): string => source.kind ?? id
+/** The enabled instances of `kind`, with their IDs and stored configurations, in settings order. */
+const instancesOf = (settings: Settings, kind: string): { id: string; config: Record<string, unknown> }[] =>
+  Object.entries(settings.sources).flatMap(([id, source]) => kindOf(id, source) === kind && source.enabled ? [{ id, config: source.config }] : [])
+/** Setup-read configuration of every instance of the kinds setup reads, by kind and instance ID: changing any re-runs setup. */
+const setupFields = (settings: Settings) => JSON.stringify(Object.keys(SETUP_FIELDS).flatMap(kind => {
+  const fields = SETUP_FIELDS[kind]!
+  const instances = Object.entries(settings.sources).filter(([id, source]) => kindOf(id, source) === kind)
+  // A kind with no stored instance reads its default instance's defaults, so enabling one changes nothing by itself.
+  if (!instances.length) return [[kind, kind, fields.map(() => '')]]
+  return instances.map(([id, source]) => [kind, id, fields.map(key => source.config[key] ?? '')])
+}))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
 /**
@@ -57,12 +69,25 @@ export class Setup {
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
   restart(): void { setTimeout(this.host.restart, 0) }
-  /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
+  /**
+   * Verifies the account CLIs a modified source block needs before saving, ignoring setup errors belonging to other blocks:
+   * every enabled GitHub instance must resolve the agent account and its own repository's push access (CONTRACT §六), and the
+   * first failure names that instance and repository so the operator fixes the card it belongs to.
+   */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
-    const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
-      : resolveDeployment(machine, settings.sources.github?.config, this.probe())
-    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    const probe = this.probe()
+    if (block === 'source:feishu') {
+      await resolveFeishuBot(machine, settings.sources.feishu?.config, probe)
+        .catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === 'feishu') throw error })
+      return
+    }
+    for (const { id, config } of instancesOf(settings, 'github')) {
+      await resolveDeployment(machine, config, probe).catch((error: unknown) => {
+        if (!(error instanceof SetupError)) throw error
+        throw new SetupError(error.code, error.values, id)
+      })
+    }
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)

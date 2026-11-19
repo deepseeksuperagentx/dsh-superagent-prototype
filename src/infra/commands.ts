@@ -65,6 +65,13 @@ export class Commands {
   get deployment(): Deployment { return this.resolved() }
   get repository(): string { return this.deployment.repository }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+  /**
+   * These commands addressing another repository, keeping this environment and signal: a Source instance polls and replies
+   * within its own repository, while the account and the state directory stay the deployment's.
+   */
+  forRepository(repository: string): Commands {
+    return new Commands(() => ({ ...this.deployment, repository }), this.environment, this.signal)
+  }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,

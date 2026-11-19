@@ -22,7 +22,8 @@ export type FieldSpec =
   | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 
 export interface VariableSpec { key: string; description: Localized }
-export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger }
+/** Input of a kind's `environment.values`: the Ticket's originating Trigger (when it has one) and the instance whose values are computed. */
+export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger; instance?: string }
 export interface AdmissionRowView { id: string; label: Localized | string; note: Localized; cells: { listedUnaddressed: boolean; unlistedAddressed: boolean; unlistedUnaddressed: boolean } }
 /** Policy extension for a source kind, defining allowed senders, admission table rows, and optional external roster sync. */
 export interface SourcePolicyPart<P extends Record<string, unknown>> {
